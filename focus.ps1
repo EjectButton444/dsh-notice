@@ -5,10 +5,12 @@
 #
 # Why this is not just "ShowWindow":
 #   The renderer cannot wake the window itself (a tray-hidden window is unreachable
-#   from the page and `dsh://` navigations are swallowed). The host half runs at a
-#   lower integrity level than the Desktop window, so a `dsh://open` second instance
-#   launched from it dies before Electron's single-instance handshake and cannot ask
-#   the running instance to focus itself (spike #3 + docs/spikes/06-click-bridge.md).
+#   from the page and `dsh://` navigations are swallowed). In this environment a
+#   `dsh://open` second instance launched from the host dies before Electron's
+#   single-instance handshake (measured: exit 0x80000003; the agent tool shell is Low
+#   integrity while this host-spawned helper is Medium, so the launch context -- not
+#   plain integrity -- is what breaks it). The protocol path therefore cannot ask the
+#   running instance to focus itself (spike #3 + docs/spikes/06-click-bridge.md).
 #   A raw Win32 restore (posted WM_SYSCOMMAND / SC_RESTORE + ShowWindow) does bring the
 #   HWND back on screen -- but Chromium's renderer stays frozen (no repaint, no
 #   question card, clicks appear to do nothing) because Electron still considers the

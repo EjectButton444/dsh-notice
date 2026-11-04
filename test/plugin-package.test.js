@@ -161,10 +161,18 @@ test('focus helper wakes the window through the app and keeps its fallbacks sile
   assert.match(helper, /TRAY_CLICK_MESSAGE = 0x8001/, 'the callback message is WM_APP+1 as in Electron 44')
   assert.match(helper, /TRAY_ICON_ID = 2/, 'Electron kBaseIconId is 2')
   assert.match(helper, /WM_LBUTTONDOWN/, 'Electron dispatches tray clicks on WM_LBUTTONDOWN')
+  // Lock the actual posted message layout, not just the constants, so a drift in the
+  // C# call (message/id/lParam order) fails the test instead of only real-machine checks.
+  assert.match(
+    helper,
+    /PostMessage\(tray, TRAY_CLICK_MESSAGE, \(IntPtr\)iconId, \(IntPtr\)WM_LBUTTONDOWN\)/,
+    'the tray click is posted as Electron expects',
+  )
   assert.ok(
     helper.indexOf('[DshNoticeFocus]::TryTrayClick()') < helper.indexOf('[DshNoticeFocus]::Reveal()'),
     'the native tray path is attempted before the raw Win32 fallback',
   )
+  assert.match(helper, /if \(\$state -ne 1\) \{ \$state = \[DshNoticeFocus\]::Reveal\(\) \}/, 'the Win32 fallback only runs when the tray path did not focus the window')
 
   // Fallback 1: raw Win32 wake/focus.
   assert.match(helper, /WM_SYSCOMMAND/, 'the helper can restore the window through taskbar-class messages')
