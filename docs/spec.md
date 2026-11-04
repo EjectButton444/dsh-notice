@@ -108,7 +108,7 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
 - 默认 `unfocused`：仅当 DSH 窗口未聚焦、或聚焦但当前主视图会话 ≠ 事件会话时发通知；`always` 时跳过该判定。
 - 声音：`silent` 由 `sound` 配置与静音状态决定。
 - 消解：授权/提问的 `pendingInteraction` 消失，或回合完成的会话被打开（成为主视图 / 未读完成被清除）时关闭通知。
-- 点击：P0 尽力聚焦；P1 由宿主执行点击桥（单实例 → `focusPrimaryWindow()` restore+show+focus），接受 1–3 秒冷启动。**实现注记（2026-11-04，#6）**：真机实测本机宿主上下文无法完成 `dsh://open` 单实例握手（第二实例在握手前退出；agent 工具 shell 为 Low 完整性、宿主 spawn 的 helper 为 Medium，问题在启动/沙箱上下文而非单纯完整性）；且外部 Win32 显示（`SC_RESTORE`/`ShowWindow`）会让 Chromium 渲染器保持冻结（窗口可见但点不动）。因此最终实现为「宿主端点 + `focus.ps1`」三段式：**主路径**向应用进程的 `Electron_NotifyIconHostWindow` 投递 Electron 托盘点击消息（`WM_APP+1` / icon id 2 / `WM_LBUTTONDOWN`），由应用自己的 `focusPrimaryWindow()` 原生 restore+show+focus（窗口完全可交互）；② Win32 消息兜底（`SC_RESTORE`/`ShowWindow`/`SetForegroundWindow` + `AttachThreadInput` 前台锁变通，只保证显示）；③ 最后才 `Start-Process 'dsh://open'`。客户端 `notification.onclick` 带标记头 document-relative `POST /dsh-notice/focus`，失败静默。偏差与证据见 [spikes/06](spikes/06-click-bridge.md)。**实现注记（2026-11-04，#9）**：v1.1 起点击通知还会先通过公开客户端服务 `uiWorkspace.openSession(target)` 选中事件所属会话（`SessionTarget = SessionId | SubagentAddress`），再聚焦窗口——因此在别的会话时点击通知会直接切到等待操作的会话。服务缺失或调用失败时静默退回「只聚焦不切会话」。见 [tickets/09](tickets/09-notification-click-open-session.md)。
+- 点击：P0 尽力聚焦；P1 由宿主执行点击桥（单实例 → `focusPrimaryWindow()` restore+show+focus），接受 1–3 秒冷启动。**实现注记（2026-11-04，#6）**：真机实测本机宿主上下文无法完成 `dsh://open` 单实例握手（第二实例在握手前退出；agent 工具 shell 为 Low 完整性、宿主 spawn 的 helper 为 Medium，问题在启动/沙箱上下文而非单纯完整性）；且外部 Win32 显示（`SC_RESTORE`/`ShowWindow`）会让 Chromium 渲染器保持冻结（窗口可见但点不动）。因此最终实现为「宿主端点 + `focus.ps1`」三段式：**主路径**向应用进程的 `Electron_NotifyIconHostWindow` 投递 Electron 托盘点击消息（`WM_APP+1` / icon id 2 / `WM_LBUTTONDOWN`），由应用自己的 `focusPrimaryWindow()` 原生 restore+show+focus（窗口完全可交互）；② Win32 消息兜底（`SC_RESTORE`/`ShowWindow`/`SetForegroundWindow` + `AttachThreadInput` 前台锁变通，只保证显示）；③ 最后才 `Start-Process 'dsh://open'`。客户端 `notification.onclick` 带标记头 document-relative `POST /dsh-notice/focus`，失败静默。偏差与证据见 [spikes/06](spikes/06-click-bridge.md)。**实现注记（2026-11-04，#9）**：v1.1 起点击通知还会先通过公开客户端服务 `uiWorkspace.openSession(target)` 选中事件所属会话（`SessionTarget = SessionId | SubagentAddress`），再聚焦窗口——因此在别的会话时点击通知会直接切到等待操作的会话。服务缺失或调用失败时静默退回「只聚焦不切会话」。见 [tickets/09](tickets/09-notification-click-open-session.md)。**实现注记（2026-11-05，#8）**：Solution 里的「同一会话只保留一条通知并原地更新」是**产品语义**，受平台限制并非 OS 级原地更新——同名 tag 替换会让后续 `close()` 失效（[spikes/05](spikes/05-notification-rules.md)），因此渲染层的实际通知使用**唯一 tag**（`<tag>#<n>`）+ 先关闭旧通知再创建新通知；活跃横幅始终只有最新一条，但快速连续事件时 Windows 通知中心可能残留旧条目（close/replace 竞态，已知实现偏差，见 [spikes/08](spikes/08-acceptance-release.md) 与 README「已知限制」）。
 
 ## 兼容与约束
 
@@ -133,6 +133,7 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
 - 适配器薄层（DSH 状态源、通知发送器、locale）不写单测，由真机清单覆盖。
 - P1 的宿主事件归一化（把 `turn/end` 转成引擎输入）仍走同一个纯管线，属于同一 seam 的输入侧，可一并单测。
 - **实现注记（2026-11-05，#7）**：P1 引入的是**静默故障传输层**（SSE 完成信号——断流/帧协议/路由/连接隔离坏掉时，表现只是「通知不再出现」，真机清单无法在回归时及时发现）。因此除 normalize→reduce 纯管线外，另加两组**契约测试**（与 #6 点击桥的宿主路由契约测试同类，仍不接触 DSH 运行时与 Windows）：① 宿主完成帧归一化 + SSE 路由契约（握手、HEAD/405、坏连接与异步 socket 错误隔离、dispose、恶意 accessor）；② 客户端 EventSource 接驳（文档相对路径、首次 `open` 后关闭 P0 近似、帧→引擎观测、坏帧不抛、dispose）。
+- **实现注记（2026-11-05，#8）**：同上契约测试延伸到客户端适配层的 **apply/dispose 生命周期**——页面级单例锚点的回归用例模拟「同页面二次 apply」，断言只产生一条通知；这是 HMR 重复实例修复的主要验证证据。DSH 状态源、通知发送器、locale 等薄适配本身仍不写单测，由真机清单覆盖。
 - **最高验收 seam 是真机手动清单**（Toast 本身无法自动化）：通知出现、归属/图标/声音、锁屏内容、托盘隐藏时仍弹、点击唤起、连续事件不堆叠、处理后关闭。
 - 无既有测试先例（greenfield），测试命名使用 `GLOSSARY.md` 术语。
 

@@ -102,7 +102,7 @@
 
 - 包根：`package.json`（`exports: { ".": "./index.js", "./client": "./client.js", "./locale/*.json": ... }`、`dsh.bundle.patch: "./cordis.patch.yml"`、`dsh.client: { platform: "web", immediately: true, inject: [] }`）。注意 `dsh.client.inject` 是**模块加载顺序**（本包 `require()` 的平台包），不是 Cordis 服务注入；本包不 require 任何平台包，保持空数组。
 - `index.js`：宿主半身只做一件只读的事——用 `ctx.webServer.register` 暴露 `GET /dsh-notice/config`（P1 会在这里加点击桥与 SSE）。
-- `client.js`：`window.__ModuleLoader__.load({ id: 'dsh-notice', factory(require) {...} })`；factory 返回的插件对象用 **Cordis `inject: ['uiSession', 'sessions', 'locale']`** 声明服务依赖，`ctx.effect(() => subscribe(...))` 管理清理。
+- `client.js`：`window.__ModuleLoader__.load({ id: 'dsh-notice', factory(require) {...} })`；factory 返回的插件对象用 **Cordis `inject: ['uiSession', 'sessions', 'locale']`** 声明服务依赖，`ctx.effect(() => subscribe(...))` 管理清理。**#8 补充**：页面级单例锚点（`window.__dshNoticeActiveInstance` 存当前实例的 disposer，新 `apply` 先 dispose 旧实例）——热重载若遗留旧浏览器半身实例，旧副本仍会订阅状态并重复发通知（#7/#8 真机实测：一条中文、一条英文回退标题）；锚点让 HMR 后最多一个实例存活，存量旧副本需重启应用清除。回归用例在 `test/client-feed.test.js`（同页面二次 apply → 只允许一条通知）。
 - 通知决策逻辑独立成纯 reducer 模块 `client.engine.js`（package-local client chunk，`require.async('./client.engine.js')` 加载；见 [spikes/04](spikes/04-client-detection.md)、[spikes/05](spikes/05-notification-rules.md)）：
   - `reduce(state, observation, runtime, config, now) -> { state, actions }`；observation = `attention` / `pendingResolved` / `viewed`；actions = `show` / `replace` / `close`；
   - 规则全在引擎：事件映射与 zh/en 文案、按会话前台抑制、`events`/`condition`/`sound`/`mute`、单条与原地替换、3 秒同类合并窗口、「另有 N 项」、消解、子代理归并、标题兜底、`tag`（会话 id）；

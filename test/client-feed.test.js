@@ -147,12 +147,6 @@ async function mount(options = {}) {
   assert.equal(clientRegistration.id, manifest().name, 'factory id must equal the package name')
 
   const requestedChunks = []
-  const plugin = clientRegistration.factory({
-    async async(specifier) {
-      requestedChunks.push(specifier)
-      return engine
-    },
-  })
 
   const ctx = {
     uiSession: {
@@ -175,32 +169,35 @@ async function mount(options = {}) {
     },
   }
 
-  plugin.apply(ctx)
+  /** Materialize one registration's plugin (the loader's require.async table) and apply it. */
+  const startPlugin = (registration) =>
+    registration
+      .factory({
+        async async(specifier) {
+          requestedChunks.push(specifier)
+          return engine
+        },
+      })
+      .apply(ctx)
+
+  startPlugin(clientRegistration)
   await flush()
   await flush()
   assert.deepEqual(requestedChunks, ['./client.engine.js'], 'the adapter loads the real engine chunk')
 
-  let instances = 1
   if (options.doubleApply === true) {
     // Simulate a hot reload that forgets to dispose the previous module instance: the
     // plugin script runs again in the same page and applies a second copy.
     vm.runInContext(read('client.js'), context, { filename: 'client.js' })
     const registrationsAfterReload = registrations.filter((definition) => definition.chunk === undefined)
     assert.equal(registrationsAfterReload.length, 2, 'the reload registers a second module instance')
-    const reloaded = registrationsAfterReload[1].factory({
-      async async() {
-        return engine
-      },
-    })
-    reloaded.apply(ctx)
+    startPlugin(registrationsAfterReload[1])
     await flush()
     await flush()
-    instances = 2
   }
 
   return {
     engine,
-    instances,
     notifications,
     warnings,
     fetches,
@@ -249,7 +246,6 @@ test('the client opens a document-relative EventSource for the precise host feed
 
 test('a hot-reloaded duplicate instance is disposed so one event yields one toast', async () => {
   const mounted = await mount({ doubleApply: true })
-  assert.equal(mounted.instances, 2)
   assert.equal(mounted.sources.length, 2, 'each load opened its own SSE feed')
   assert.equal(mounted.sources[0].closed, true, 'the stale instance feed is closed by the singleton anchor')
 
