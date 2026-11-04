@@ -68,6 +68,7 @@
 - **#7 SSE 观察/调试**：宿主路由是纯 `text/event-stream`，无心跳、无重放；`GET /dsh-notice/events` 用 `.scratch/verify/07-sse-watch.mjs` 或 `curl -N` 看帧。宿主重组合会断开流（EventSource 自动重连），断线期间完成的回合不补发（宁可漏、不可误）。
 - **#7 客户端精确模式**：`EventSource` 首次 `open` 后 `preciseCompletion` 永久置真，P0 `running` 近似关闭——调试验证 Stop 行为时，若看到 Stop 仍弹通知，先确认客户端是否真的连上了 SSE（`07-sse-watch.mjs` 能连上不代表页面里也连上；可临时在客户端代码加 flag 打点或检查是否发生 HMR 重载）。
 - **#8 实测补充（HMR 重复实例 → 通知重复）**：本机页面长期不重启、反复 HMR 重载后，页面里可能同时存活**两个** `dsh-notice` 浏览器半身实例（旧副本无 SSE、locale/标题快照陈旧）；同一注意力事件会被两个实例各弹一条通知（一条中文带会话标题、一条英文「Untitled session」），toast 自增计数也各自独立——这是判断多实例的关键特征。`client.js` 已加页面级单例锚点（`window.__dshNoticeActiveInstance`，新 `apply` 先 dispose 旧实例）防止再次累积，但**存量旧副本只能靠重启应用清除**；遇到「一条事件两条通知」先确认是否刚从多次 HMR 重载的页面过来，必要时重启应用复核。
+- **#8 干净构建结论（重启后，2026-11-05）**：① 重启后宿主 **webServer 端口会变化**（本次 `62809` → `65449`），所有直连端点的脚本要传实际端口（`--port` / `-Port`）；② **旧通知点击不跳转**——重启/热重载前创建的通知其点击处理已随旧实例销毁，Windows 通知中心里仍可点但只关闭不跳转，验收点击跳转前先清空通知中心；③ 同一会话**快速连续事件**时通知中心可能残留旧条目（Windows close/replace 竞态），判断「每会话单条」要看活跃横幅/最新条目与插件日志，不要只数通知中心历史；④ 页面内 EventSource 在宿主重组合后能自动重连（真机验证：重组合后另一会话的完成通知仍送达），因此调 SSE 时不必重启页面。
 - **锁屏会污染窗口/聚焦类验证**：Windows 锁屏时 `GetForegroundWindow()` 是「Windows 默认锁屏界面」，任何 `SetForegroundWindow` 都失败；`on_screen`/隐藏恢复仍可测。做点击唤起验收前先确认已解锁（可全屏截图确认）。
 - **合成鼠标点击不能激活 Windows Toast**（Shell 忽略注入输入）；点击相关验证必须真人操作一次（或 `onclick` 打点 + 人点）。
 - **合成鼠标点击/键盘输入对本机 DSH 窗口整体无效**（#4 实测：`mouse_event` 点击侧边栏会话行无任何反应；推测 DSH 窗口以更高完整性运行，UIPI 丢弃注入输入）。并且 Electron 未启用渲染进程无障碍：UIA 树的 descendants 只有 `Chrome Legacy Window`，看不到 web 内容。⇒ **切换主视图、点插件页这类 UI 操作只能真人做**，agent 侧的可自动化观测限于窗口状态、截图、通知数据库、host HTTP/SSE。
