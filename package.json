@@ -31,7 +31,8 @@
     },
     "client": {
       "platform": "web",
-      "immediately": true
+      "immediately": true,
+      "inject": []
     }
   }
 }

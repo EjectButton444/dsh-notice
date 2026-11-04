@@ -45,6 +45,7 @@ test('manifest declares an installable dsh bundle with a browser half', () => {
   assert.equal(pkg.dsh?.bundle?.patch, './cordis.patch.yml')
   assert.equal(pkg.dsh?.client?.platform, 'web')
   assert.equal(pkg.dsh?.client?.immediately, true, 'the notifier must load eagerly, not on demand')
+  assert.ok(Array.isArray(pkg.dsh?.client?.inject), 'dsh.client.inject is part of the documented P0 shape')
 
   assert.ok(pkg.exports?.['.'], 'host half export')
   assert.equal(pkg.exports?.['./client'], './client.js')
