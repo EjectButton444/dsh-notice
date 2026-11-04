@@ -60,7 +60,7 @@ DSH 的插件市场**不是**中心化注册表，而是一组「自定义索引
 5. **本地校验**：
    ```powershell
    node scripts/validate-market-index.mjs
-   node --test --test-isolation=none test/market-index.test.js
+   node --test test/market-index.test.js
    ```
 6. **提交并推送 main**：索引通过 raw URL 提供，push 到 `main` 后即生效（GitHub raw 可能有几分钟 CDN 缓存）；需要的话再打 tag / 建 GitHub Release。
 

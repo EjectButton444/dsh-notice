@@ -46,7 +46,7 @@
     "dsh": ">=0.2.1-rc.5 <0.3.0"
   },
   "scripts": {
-    "test": "node --test --test-isolation=none \"test/*.test.js\"",
+    "test": "node --test \"test/*.test.js\"",
     "check": "node --check index.js && node --check client.js && node --check client.engine.js"
   },
   "dsh": {

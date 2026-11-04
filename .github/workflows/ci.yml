@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   test:
-    name: Node 22 / test + pack
+    name: Node 24 / test + pack
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -23,7 +23,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Syntax check (ESM host + client halves)
         run: |
@@ -31,7 +31,7 @@ jobs:
           node --check client.js
           node --check client.engine.js
 
-      - name: "Unit tests (single process: --test-isolation=none)"
+      - name: Unit tests (single process, no child spawn)
         run: node --test --test-isolation=none "test/*.test.js"
 
       - name: Package contents sanity (npm pack --dry-run)

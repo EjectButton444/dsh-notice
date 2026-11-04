@@ -19,7 +19,7 @@
 4. **全量自检**（在仓库根目录）：
 
    ```powershell
-   node --test --test-isolation=none "test/*.test.js"
+   node --test "test/*.test.js"
    node --check index.js
    node --check client.js
    node --check client.engine.js
