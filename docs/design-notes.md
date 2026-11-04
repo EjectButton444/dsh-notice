@@ -1,8 +1,9 @@
-# dsh-notice v1 规格
+# dsh-notice v1 实现设计笔记
 
-状态：设计已确认（2026-11-04），待开始实现。
-决策记录：[ADR-0001 Windows 系统通知](../../docs/adr/0001-windows-system-notifications.md)、[ADR-0002 两阶段混合](../../docs/adr/0002-two-phase-hybrid-client-host.md)。
-术语以 [GLOSSARY.md](../../GLOSSARY.md) 为准。
+状态：设计已确认（2026-11-04）；P0（纯客户端插件 + Windows Toast）已实现，实测结论见 [spikes/02-toast-spike.md](spikes/02-toast-spike.md)。
+规格：[docs/spec.md](spec.md)。
+决策记录：[ADR-0001 Windows 系统通知](adr/0001-windows-system-notifications.md)、[ADR-0002 两阶段混合](adr/0002-two-phase-hybrid-client-host.md)。
+术语以 [GLOSSARY.md](../GLOSSARY.md) 为准。
 
 ## 1. 目标与非目标
 

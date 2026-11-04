@@ -2,6 +2,8 @@
 
 The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
 
+> 本仓库的规划与实施记录以 `docs/` 本地文档为准（见 [issue-tracker.md](issue-tracker.md)）；这些标签只用于 GitHub 公开路线图 issue。本地工单用 `Status:` 行表达进度。
+
 | Label in mattpocock/skills | Label in our tracker | Meaning                                  |
 | -------------------------- | -------------------- | ---------------------------------------- |
 | `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |

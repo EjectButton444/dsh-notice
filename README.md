@@ -26,6 +26,14 @@
 - 提醒渠道只有 Windows 系统通知（ADR-0001）；
 - 配置走 DSH profile 的 `cordis.patch.yml`，v1 不做设置界面。
 
+## 文档（本地优先）
+
+规划与实施记录以仓库内文档为准，GitHub issue 只作公开路线图：
+
+- 规格与设计：[docs/spec.md](docs/spec.md)、[docs/design-notes.md](docs/design-notes.md)
+- 工单与验证结论：[docs/tickets/](docs/tickets/)、[docs/spikes/](docs/spikes/)
+- 风险与决策：[docs/risks.md](docs/risks.md)、[docs/adr/](docs/adr/)
+
 ## 许可
 
 MIT

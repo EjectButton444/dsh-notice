@@ -1,3 +1,5 @@
+Status: done (2026-11-04) — spike 结论与证据见 [docs/spikes/02-toast-spike.md](../spikes/02-toast-spike.md)。
+
 ## Parent
 
 #1

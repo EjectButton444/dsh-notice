@@ -157,8 +157,8 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
 
 # Further Notes
 
-- **风险优先**：风险登记表（本地 `.scratch/dsh-notice/risks.md`，11 条）是 ticket 排序依据。R1（Toast 归属/图标）、R2（客户端插件加载）、R3（点击唤起）是架构级风险，必须先以 spike 形式验证并**阻塞**依赖它们的实现 ticket；R4（宿主钩子让审批 fail-closed）是「比没有插件更糟」的红线，实现时强制代码审查 + try/catch + 只读旁路。
+- **风险优先**：风险登记表（[docs/risks.md](risks.md)，11 条）是 ticket 排序依据。R1（Toast 归属/图标）、R2（客户端插件加载）、R3（点击唤起）是架构级风险，必须先以 spike 形式验证并**阻塞**依赖它们的实现 ticket；R4（宿主钩子让审批 fail-closed）是「比没有插件更糟」的红线，实现时强制代码审查 + try/catch + 只读旁路。
 - **风险优先阶段**（对应 ticket 排序建议）：S0 环境就绪 → S1 最小客户端插件弹 Toast（R1/R2）→ S2 隐藏窗口 + `dsh://open` 基线与点击行为（R3/R7）→ S3 注意力检测 + 决策引擎（R5 近似接受）→ S4 通知规则（R9/R10）→ S5 宿主半身（R3/R4/R5）→ S6 真机验收与升级兼容（R6/R10/R11）。
 - **已知平台陷阱**：客户端只见 `api-session/status(bool)`，P0 的「完成」是近似（Stop/报错也会弹，P1 收敛）；宿主 waterfall 不加 `prepend` 会漏事件；`ctx.remote.$on` 白名单封闭；渲染进程无法唤起托盘窗口；AUMID 未设置导致 Toast 归属/图标需真机实测（异常时退化为宿主 PowerShell Toast）。
-- 相关文档：`GLOSSARY.md`、`docs/adr/0001-windows-system-notifications.md`、`docs/adr/0002-two-phase-hybrid-client-host.md`、本地设计 spec（`.scratch/dsh-notice/spec.md`）。
+- 相关文档：`GLOSSARY.md`、`docs/adr/0001-windows-system-notifications.md`、`docs/adr/0002-two-phase-hybrid-client-host.md`、仓库设计笔记（[docs/design-notes.md](design-notes.md)）。
 - 本 spec 来自 `/grill-with-docs` 的设计会话（3 轮访谈 + 4 份内部研究报告），术语与决策均已与用户确认。

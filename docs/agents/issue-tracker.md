@@ -1,46 +1,40 @@
-# Issue tracker: GitHub
+# Issue tracker: local docs first, GitHub for the roadmap
 
-Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+规划与实施记录的唯一事实源是本仓库的 `docs/`，**不是** GitHub issues。GitHub 只承担公开路线图与发布。
 
-## Conventions
+## 本地结构
 
-- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --json number,title,body,labels,comments`.
-- **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
-- **Make an issue a sub-issue of a parent**: `gh issue create --parent <parent> ...`, or `gh issue edit <parent> --add-sub-issue <child>` afterwards (`gh` 2.94+). Older `gh`: `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>` (database id, as in **Blocking** below). Without sub-issues, put `Part of #<parent>` at the top of the child body.
-- **Comment on an issue**: `gh issue comment <number> --body "..."`
-- **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
-- **Close**: `gh issue close <number> --comment "..."`
+| 内容 | 路径 | 说明 |
+|---|---|---|
+| 规格 | `docs/spec.md` | 公开的 v1 spec（对应 GitHub #1 的内容快照） |
+| 设计笔记 | `docs/design-notes.md` | 实现层面的设计细节（事件来源、通知规则、测试策略） |
+| 工单 | `docs/tickets/<NN>-<slug>.md` | `NN` = 对应 GitHub 路线图 issue 号：`02` ↔ #2 … `08` ↔ #8 |
+| spike / 验证结论 | `docs/spikes/<NN>-<slug>.md` | 真机实测记录、风险结论 |
+| 风险 | `docs/risks.md` | 风险登记表（ticket 排序依据） |
 
-Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
+## 工单约定
 
-## Pull requests as a triage surface
+- 每个工单文件开头写一行状态：`Status: pending` / `Status: in-progress` / `Status: done (YYYY-MM-DD)`；完成时附上验证记录或提交的指针。
+- 依赖写成 `Blocked by:` 列表（引用 issue 号或工单文件名）。
+- 一个工单内不写实现流水账；spike/真机结论放 `docs/spikes/`。
 
-**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
+## 技能术语映射
 
-When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
+- **"fetch the relevant ticket"**：读对应的 `docs/tickets/<NN>-<slug>.md`（以及它引用的 spec / spike）。
+- **"publish to the issue tracker"**：写或更新本地 `docs/` 文件并提交。
+- **"claim a ticket"**：把 `Status:` 改为 `in-progress`；完成时改 `done (日期)`。
+- **triage**：本地工单用 `Status:` 表达就绪状态；`needs-triage` 等标签只作用于 GitHub 路线图 issue。
 
-- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
-- **List external PRs for triage**: `gh api --paginate 'repos/{owner}/{repo}/pulls?state=open' --jq '.[] | select(.author_association | IN("OWNER","MEMBER","COLLABORATOR") | not) | {number, title, author: .user.login, author_association, labels: [.labels[].name]}'`.
-- **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
+## GitHub 路线图（只读镜像）
 
-GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with `gh pr view 42` and fall back to `gh issue view 42`.
+- [#1](https://github.com/EjectButton444/dsh-notice/issues/1) v1 spec（内容已归档进 `docs/spec.md`）；
+- [#2](https://github.com/EjectButton444/dsh-notice/issues/2)–[#8](https://github.com/EjectButton444/dsh-notice/issues/8) 为公开路线图指针，细节与状态一律以 `docs/tickets/` 为准。
+- 允许：创建/更新路线图 issue、应用 triage 标签、关闭已完成项、发布 release note。
+- 禁止：把实施报告、测试结论或长评论写进 issue；在 issue 里维护与本地文档重复的计划。
 
-## When a skill says "publish to the issue tracker"
+## 常用操作（GitHub，路线图维护）
 
-Create a GitHub issue.
-
-## When a skill says "fetch the relevant ticket"
-
-Read it as in **Read an issue** above.
-
-## Wayfinding operations
-
-Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
-
-- **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
-- **Child ticket**: an issue linked to the map as a GitHub sub-issue (see **Make an issue a sub-issue of a parent**). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
-- **Blocking**: GitHub's **native issue dependencies**, the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only, the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
-- **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
-- **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write.
-- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+- 读取 issue：# 内容以本地文档为准，仅在需要确认路线图状态时用 `gh issue view <n>`。
+- 关闭已完成项：`gh issue close <n> --comment "<一行：已完成，记录见 docs/...>"`；不要写长报告。
+- 标签：`gh issue edit <n> --add-label "<label>"` / `--remove-label "<label>"`。
+- 仓库从 `git remote -v` 推断；`gh` 在克隆目录内自动识别。
