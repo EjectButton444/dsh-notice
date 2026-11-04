@@ -426,6 +426,15 @@ test('notification clicks call the host focus bridge and swallow an unreachable 
   let statusListener
   let statuses = new Map()
   let rows = {}
+  const openedSessions = []
+  let failOpenSession = false
+  let serviceAvailable = true
+  const uiWorkspace = {
+    openSession(sessionId) {
+      if (failOpenSession) throw new Error('navigation failed')
+      openedSessions.push(sessionId)
+    },
+  }
   const fakeEngine = {
     normalizeConfig: () => ({ events: { approval: true, question: true, turnComplete: true }, condition: 'unfocused', sound: true, mute: false }),
     classifyPending: () => undefined,
@@ -452,6 +461,11 @@ test('notification clicks call the host focus bridge and swallow an unreachable 
     },
     sessions: { list: { getSnapshot: () => ({ byId: rows }), subscribe: () => () => {} } },
     locale: { getSnapshot: () => ({ active: 'en' }) },
+    // Cordis client-service lookup used to select the notification's session.
+    get(name) {
+      if (name !== 'uiWorkspace' || !serviceAvailable) return undefined
+      return uiWorkspace
+    },
     effect(callback) {
       callback()
     },
@@ -476,9 +490,36 @@ test('notification clicks call the host focus bridge and swallow an unreachable 
   assert.ok(focusRequest, 'clicking the notification calls the host click bridge')
   assert.equal(focusRequest.method, 'POST')
   assert.equal(focusRequest.headers['x-dsh-notice-focus'], '1', 'the renderer marks the click-bridge intent header')
+  assert.deepEqual(openedSessions, ['s1'], 'clicking the notification selects its session through the public uiWorkspace service')
   assert.equal(window.focusCalls, 1, 'the renderer keeps its P0 best-effort focus as a fallback')
   assert.ok(
     warnings.some((args) => String(args[0]).includes('host focus request failed')),
     'an unreachable host endpoint is only warned about, never thrown into DSH',
   )
+
+  // A session that cannot be opened must not break the click bridge.
+  failOpenSession = true
+  const focusRequestsBefore = fetches.filter((call) => call.path === 'dsh-notice/focus').length
+  assert.doesNotThrow(() => toast.onclick(), 'a failed session selection never throws into DSH')
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fetches.filter((call) => call.path === 'dsh-notice/focus').length, focusRequestsBefore + 1, 'the click bridge still runs')
+  assert.ok(
+    warnings.some((args) => String(args[0]).includes('open session on click failed')),
+    'a failed session selection is only warned about',
+  )
+
+  // A trimmed UI without the uiWorkspace service keeps the old behavior: focus only.
+  serviceAvailable = false
+  failOpenSession = false
+  const focusRequestsWithoutService = fetches.filter((call) => call.path === 'dsh-notice/focus').length
+  const openFailuresBefore = warnings.filter((args) => String(args[0]).includes('open session on click failed')).length
+  assert.doesNotThrow(() => toast.onclick(), 'a missing session service never throws into DSH')
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fetches.filter((call) => call.path === 'dsh-notice/focus').length, focusRequestsWithoutService + 1, 'the click bridge still runs')
+  assert.equal(
+    warnings.filter((args) => String(args[0]).includes('open session on click failed')).length,
+    openFailuresBefore,
+    'an absent service is not a failure',
+  )
+  assert.deepEqual(openedSessions, ['s1'], 'no session selection happens when the service is absent')
 })

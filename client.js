@@ -12,10 +12,11 @@
  * The pure reducer lives in ./client.engine.js (package-local client chunk). This
  * file only turns DSH state changes into engine observations (attention /
  * pendingResolved / viewed), applies the returned actions to Web Notifications,
- * fetches the profile config from the host half (`GET /dsh-notice/config`), and asks
- * the host click bridge to focus the window on notification click
- * (`POST /dsh-notice/focus`, ticket #6). It is a read-only side channel: every
- * callback is wrapped so an exception can never disturb DSH (ADR-0002).
+ * fetches the profile config from the host half (`GET /dsh-notice/config`), selects
+ * the notification's session on click (`uiWorkspace.openSession`, ticket #9), and asks
+ * the host click bridge to focus the window (`POST /dsh-notice/focus`, ticket #6). It
+ * is a read-only side channel: every callback is wrapped so an exception can never
+ * disturb DSH (ADR-0002).
  *
  * Everything stays inside one IIFE: HMR re-executes client scripts, so a
  * top-level `const`/`let` would throw "already declared" on the second execution
@@ -137,6 +138,40 @@
   }
 
   /**
+   * Select the notification's session in the UI before the window is focused (ticket
+   * #9). `uiWorkspace` is a public client service ("Select a Session and show its
+   * Conversation as one UI navigation action"); resolve it lazily so a trimmed UI
+   * without that service still gets the window-focus click bridge. Never throws.
+   */
+  function openNotificationSession(ctx, sessionId) {
+    try {
+      if (typeof sessionId !== 'string' || sessionId === '') return
+      const workspace = resolveUiWorkspace(ctx)
+      if (workspace === undefined || typeof workspace.openSession !== 'function') return
+      workspace.openSession(sessionId)
+    } catch (error) {
+      warn('open session on click failed', error)
+    }
+  }
+
+  /**
+   * Resolve the `uiWorkspace` client service through the Cordis context, best effort.
+   * `ctx.get` is the optional-lookup accessor; a direct property read would throw
+   * because the service is deliberately not in the plugin's `inject` list.
+   */
+  function resolveUiWorkspace(ctx) {
+    try {
+      if (ctx !== undefined && ctx !== null && typeof ctx.get === 'function') {
+        const service = ctx.get('uiWorkspace')
+        if (service !== undefined && service !== null) return service
+      }
+    } catch (error) {
+      return undefined
+    }
+    return undefined
+  }
+
+  /**
    * Subscribe to the attention sources, translate transitions into observations for
    * the engine, and apply the returned notification actions. Returns a disposer
    * that unsubscribes and closes live toasts.
@@ -170,8 +205,10 @@
           silent: action.silent === true,
         })
         toast.onclick = () => {
-          // P0 best effort first (visible-window focus), then the host click bridge,
-          // which is the only path that can restore a tray-hidden window (#6).
+          // Select the notification's session first, so the restored window already
+          // shows the conversation that needs attention (#9); then try visible-window
+          // focus, then the host click bridge (the only tray-window path, #6).
+          openNotificationSession(ctx, action.tag)
           try {
             window.focus()
           } catch (error) {
