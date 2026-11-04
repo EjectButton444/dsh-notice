@@ -91,6 +91,7 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
   - 订阅 `approval/request`、`user-questions/request`（必须 `prepend: true` 且 `return next()`）与 `session/event` 中 `turn/end`；
   - 只有 `turn/end.reason.kind === 'completed'` 才算**回合完成**；`aborted`、`error`、`interrupted`、`forked`、`blocked`、`max-tokens` 不通知；
   - 所有钩子逻辑用 try/catch 包裹，只读旁路，任何异常吞掉——绝不让监听器抛错（会让审批 fail-closed 成 `unavailable`）。
+  - **实现注记（2026-11-05，#7）**：宿主半身只订阅了 `session/event` 的 `turn/end`（observe-only、无 `prepend` 语义），把 `reason.kind === 'completed'` 归一化为帧、经免构建 SSE 端点 `GET /dsh-notice/events` 下发（文档相对 `new EventSource('dsh-notice/events')`）；客户端在 SSE 首次 `open` 后永久进入精确模式，P0 的 `running` 边沿近似仅作迁移回退（SSE 未连通的旧宿主）。`approval/request` / `user-questions/request` 的宿主订阅 v1 **未实现**：P0 已通过 `pendingInteraction` 覆盖这两类提醒，宿主侧细节对通知决策不是必需，v1 保持宿主最小旁路（ticket #7 明确「宿主只负责归一化事件，不重复实现通知规则」）；若 v2 需要通知内携带审批/问题细节再补。归一化逻辑在宿主 `normalizeTurnEnd` 与引擎 `normalizeTurnEndFrame` 两个纯 seam 上单测，真机验收见 [spikes/07](spikes/07-precise-turn-completion.md)。
 - 会话身份：用 `parentId`/`origin` 识别子代理会话，把其待处理交互归并到所属主会话；子代理的回合完成不提醒。
 
 ## 通知决策引擎（唯一自动化测试 seam）
