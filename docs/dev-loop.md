@@ -14,7 +14,7 @@
 - 安装方式：`dsh plugin --profile desktop add "D:\AI区\dsh小插件\notice"`（与 `plugin_manager install_bundle` 共用 package operations，写入 `link:` 依赖并把 bundle 追加到 `dsh.profile.bundles`）。
 - profile `package.json`：`"dsh-notice": "link:D:/AI区/dsh小插件/notice"`；`profiles/desktop/node_modules/dsh-notice` 是指向仓库的 junction。
 - 安装时进程里激活的 host 行 id 是 `dsh-notice`；仓库 `cordis.patch.yml` 已按 spec 改为 `notice`，**下次 DSH 重启后生效**。判断当前激活状态以 client graph（`GET /plugins/events`）里是否存在 `dsh-notice` 为准。
-- **当前实现状态（#6 之后）**：客户端半身 = `client.js`（适配层）+ `client.engine.js`（纯决策引擎 chunk）；宿主半身 = `index.js`（只读配置路由 + 点击桥端点）+ `focus.ps1`（窗口恢复 helper，三段式：Electron 托盘点击原生路径 → Win32 兜底 → `dsh://open` 最后）。通知点击已接入宿主点击桥（`POST /dsh-notice/focus`，标记头 `x-dsh-notice-focus: 1`），#6 真机验收通过；回合完成的 P0 近似（Stop/报错也弹）仍由 #7 收敛。
+- **当前实现状态（#6/#9 之后）**：客户端半身 = `client.js`（适配层）+ `client.engine.js`（纯决策引擎 chunk）；宿主半身 = `index.js`（只读配置路由 + 点击桥端点）+ `focus.ps1`（窗口恢复 helper，三段式：Electron 托盘点击原生路径 → Win32 兜底 → `dsh://open` 最后）。通知点击 = **先 `uiWorkspace.openSession(事件会话)` 切会话**（#9，v1.1）→ 再聚焦窗口（#6 点击桥，`POST /dsh-notice/focus`，标记头 `x-dsh-notice-focus: 1`）；回合完成的 P0 近似（Stop/报错也弹）仍由 #7 收敛。两处均真机验收通过。
 - **宿主路由（当前）**：`GET /dsh-notice/config`（#5，返回 profile 行 config 原文；无覆盖为 `{}`）、`POST /dsh-notice/focus`（#6，带标记头才接受；立即 204，spawn `focus.ps1`）。客户端都以 document-relative 路径调用，直接 curl 用 `http://127.0.0.1:<port>/...`。
 - 卸载/禁用：插件页开关或 Remove，或 `dsh plugin --profile desktop remove dsh-notice`（改 profile；本机只有这一个 dev profile）。
 
@@ -23,6 +23,7 @@
 - **客户端半身**（`client.js`）：`dsh-client-hmr` 以 500ms stat 轮询已 link 包，保存后约 **450ms** 热重载并重跑 `apply`（实测 449ms）。
 - **纯决策引擎**（`client.engine.js`）：以 package-local client chunk 形式由 `client.js` 用 `require.async('./client.engine.js')` 加载。**HMR 只监视 `client.js` 的字节，改 `client.engine.js` 本身不会触发重载**（实测 graph rev 不变）——改引擎后保存一次 `client.js`（touch/加删空行均可）才会重载并拉新 chunk。若忘记这一步，会出现「新 `client.js` + 旧 engine chunk」混搭，新调用的引擎导出未定义、异常只进 `console.warn`，表现为**通知静默失效**（#4 实测踩过）。
 - 客户端脚本会被 HMR **重新执行**：顶层 `const/let` 在第二次执行时抛 "already declared" 且静默失败 → 代码必须整体包在 IIFE 内（`client.js` 顶部有注释）。
+- **客户端切会话（#9 有用事实）**：DSH 客户端有公开服务方法 `ctx.uiWorkspace.openSession(target)`（`SessionTarget = SessionId | SubagentAddress`，官方 API catalog 描述 "Select a Session and show its Conversation as one UI navigation action"），官方 UI 插件都这样切主视图。第三方客户端插件用 **`ctx.get('uiWorkspace')` 惰性解析**（服务缺失返回 undefined；不要写进 `inject`，否则服务缺失时整个插件不激活），调用包 try/catch。验证方法：切会话会改变**窗口标题**（标题 = 当前会话标题 + `— DeepSeek Harness`），用 `06-title-timeline.ps1` 采样即可自动化观察主视图切换；或在临时 HMR 探针里 `openSession(另一个 sessionId)` 再切回。
 - **宿主半身**（`index.js`、`cordis.patch.yml`、`focus.ps1`）：`index.js`/`cordis.patch.yml` 不会自动热替换；需要一次 profile 重组合（改动并保存 profile 的 `cordis.patch.yml`，或在插件页关/开一行）或重启 DSH。**重组合会替换「加载文件已变化」的 linked 包代码**（#6 实测：改 `index.js` → 保存 profile patch → ~2–4s 后新代码生效；可在响应里加临时头/日志确认）。`focus.ps1` 是每次点击 spawn 时才读的文件，改它本身不需要重组合。
 - 改 `package.json` 的 `exports`/`files`/`dsh` 字段后，需要重新安装或重启才被读取。
 - **改插件配置（#5 起）**：配置在 profile `cordis.patch.yml` 的本插件 loader 行。注意**重组合后行 id 是 `notice`**（仓库 bundle patch 的值），写 `- id: dsh-notice` 的覆盖会被静默跳过；正确流程：

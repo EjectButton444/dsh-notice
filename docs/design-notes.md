@@ -1,6 +1,6 @@
 # dsh-notice v1 实现设计笔记
 
-状态：设计已确认（2026-11-04）；P0 客户端半身已完成：#2 插件/Toast、#4 注意力检测 + 决策引擎（[spikes/04](spikes/04-client-detection.md)）、#5 通知规则与配置（[spikes/05](spikes/05-notification-rules.md)）；P1 点击桥已完成：#6（[spikes/06](spikes/06-click-bridge.md)）；精确完成判定待 #7。
+状态：设计已确认（2026-11-04）；P0 客户端半身已完成：#2 插件/Toast、#4 注意力检测 + 决策引擎（[spikes/04](spikes/04-client-detection.md)）、#5 通知规则与配置（[spikes/05](spikes/05-notification-rules.md)）；P1 点击桥已完成：#6（[spikes/06](spikes/06-click-bridge.md)）；v1.1 点击通知选会话已完成：#9（[tickets/09](tickets/09-notification-click-open-session.md)）；精确完成判定待 #7。
 规格：[docs/spec.md](spec.md)。
 决策记录：[ADR-0001 Windows 系统通知](adr/0001-windows-system-notifications.md)、[ADR-0002 两阶段混合](adr/0002-two-phase-hybrid-client-host.md)。
 术语以 [GLOSSARY.md](../GLOSSARY.md) 为准。
@@ -114,6 +114,7 @@
 
 - 宿主半身订阅 `issue/request` 类事件（`prepend: true` + `next()`）与 `session/event` 的 `turn/end`，把「精确完成原因」通过 **SSE** 推给客户端（免构建通道：`ctx.webServer.register()`，客户端 document-relative `fetch('plugins/notice/events')`，与 `dsh-client-hmr` 同款）——**#6 只做了点击桥，#7 做本段**。
 - 点击桥（#6，已实现，见 [spikes/06](spikes/06-click-bridge.md)）：客户端通知点击 → 带标记头 document-relative `POST /dsh-notice/focus` → 宿主立即 204 并 spawn 随包发布的 `focus.ps1`。helper 三段式：① **主路径**向应用进程的 `Electron_NotifyIconHostWindow` 投递 Electron 托盘点击消息（`WM_APP+1` / icon id 2 / `WM_LBUTTONDOWN`），让 DSH 自己的 `focusPrimaryWindow()` 做原生 restore+show+focus——外部 Win32 显示会让 Chromium 渲染器冻结（窗口可见但点不动、无渲染更新），只有应用原生路径能恢复可交互窗口；② Win32 兜底（`SC_RESTORE` / `ShowWindow` / `SetForegroundWindow` + `AttachThreadInput` 前台锁变通），只保证显示；③ 窗口存在但抬不起时最后 `Start-Process 'dsh://open'`。隐藏窗口可能保留 `GetForegroundWindow()` 句柄，判断"已聚焦"必须同时要求 OnScreen。spawn 环境先清洗 `ELECTRON_RUN_AS_NODE`；**不要用 Node 的 `detached: true`**（Windows 上配合 `stdio: 'ignore'` 会让 PowerShell 立即退出），用普通子进程 + `unref()`。渲染进程内无法直接唤起托盘窗口，故必须走宿主。
+- 点击选会话（#9，v1.1，已实现）：同一 `onclick` 先调用公开客户端服务 `uiWorkspace.openSession(action.tag)`（tag = 事件所属主会话 id；`SessionTarget = SessionId | SubagentAddress`），再聚焦窗口；`ctx.get('uiWorkspace')` 惰性解析，服务缺失/抛错静默降级。切换主视图会让事件会话成为 `retainedBy.mainView`，引擎随后的 `viewed` 观测会关闭该会话的完成通知。无需宿主改动。
 - 宿主仍只做旁路：任何失败只记日志，绝不阻塞会话。
 
 ## 6. 约束与兼容
