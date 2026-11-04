@@ -1,0 +1,13 @@
+# 研究过程资料（asar 解包、DSH 内部调研），不提交到公开仓库
+.scratch/research/
+
+# 依赖与产物
+node_modules/
+dist/
+*.tgz
+
+# 日志与临时文件
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
