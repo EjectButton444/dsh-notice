@@ -1,37 +1,21 @@
 // Contract tests for the dsh-notice plugin package.
 //
-// These verify the two public boundaries this spike depends on, not the internals:
+// These verify the public boundaries the plugin depends on, not adapter internals:
 //   A. the package the DSH plugin manager installs (manifest, bundle patch, shipped files),
 //   B. the browser module contract consumed by DSH client-modules
-//      (`window.__ModuleLoader__.load` -> factory -> apply -> Web Notification).
+//      (`window.__ModuleLoader__.load` -> factory -> inject -> apply -> engine chunk).
 //
-// The notification decision engine gets its own seam in a later ticket; this file
-// only protects the packaging and the one-shot debug trigger from silent breakage.
+// The notification decision engine is unit-tested at its own seam in
+// test/client-engine.test.js. The thin adapter (DSH state source, notification
+// sender, locale) is covered by the real-machine checklist in docs/, as decided in
+// docs/spec.md "Testing Decisions", so nothing here reaches inside it.
 
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { join } from 'node:path'
 import { test } from 'node:test'
 import vm from 'node:vm'
+import { coveredByFiles, exists, manifest, read } from './helpers.js'
 
-const root = fileURLToPath(new URL('..', import.meta.url))
-const read = (relative) => readFileSync(join(root, relative), 'utf8')
-const exists = (relative) => existsSync(join(root, relative))
-const manifest = () => JSON.parse(read('package.json'))
-
-/** Match one package.json `files` pattern (only `*` wildcards are used here). */
-function coveredByFiles(relative) {
-  return manifest().files.some((pattern) => {
-    const source = pattern
-      .split('*')
-      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      .join('[^/]*')
-    return new RegExp(`^${source}$`).test(relative)
-  })
-}
-
-const runtimeFiles = ['index.js', 'client.js', 'cordis.patch.yml', 'icon.svg', 'locale/en.json', 'locale/zh.json']
+const runtimeFiles = ['index.js', 'client.js', 'client.engine.js', 'cordis.patch.yml', 'icon.svg', 'locale/en.json', 'locale/zh.json']
 
 test('manifest declares an installable dsh bundle with a browser half', () => {
   const pkg = manifest()
@@ -45,6 +29,8 @@ test('manifest declares an installable dsh bundle with a browser half', () => {
   assert.equal(pkg.dsh?.bundle?.patch, './cordis.patch.yml')
   assert.equal(pkg.dsh?.client?.platform, 'web')
   assert.equal(pkg.dsh?.client?.immediately, true, 'the notifier must load eagerly, not on demand')
+  // dsh.client.inject is module load order (packages this bundle require()s); the
+  // Cordis services are injected by the factory's own `inject` list in client.js.
   assert.ok(Array.isArray(pkg.dsh?.client?.inject), 'dsh.client.inject is part of the documented P0 shape')
 
   assert.ok(pkg.exports?.['.'], 'host half export')
@@ -62,6 +48,16 @@ test('manifest declares an installable dsh bundle with a browser half', () => {
     assert.ok(meta?.title, `${locale} needs meta.title for the plugin list`)
     assert.ok(meta?.description, `${locale} needs meta.description for the plugin list`)
   }
+})
+
+test('the engine chunk obeys the package-local client chunk contract', () => {
+  // dsh-client-modules only serves /plugins/<id>/client.<name>.js and only accepts
+  // `chunk: "client.<name>.js"` registrations; the adapter fetches it with
+  // require.async. All three halves of that contract must agree on one file name.
+  assert.ok(exists('client.engine.js'), 'the chunk file must exist next to client.js')
+  assert.match(read('client.js'), /ENGINE_CHUNK = '\.\/client\.engine\.js'/, 'the adapter requests the chunk by this name')
+  assert.match(read('client.js'), /require\.async\(ENGINE_CHUNK\)/, 'the chunk travels through require.async')
+  assert.match(read('client.engine.js'), /chunk:\s*'client\.engine\.js'/, 'the chunk registers under this name')
 })
 
 test('bundle patch inserts exactly one loader row named after the package', () => {
@@ -82,21 +78,7 @@ test('host half is a no-op Cordis plugin', async () => {
   assert.doesNotThrow(() => host.apply())
 })
 
-test('client half loads one debug toast through the module loader contract', () => {
-  const sent = []
-  class FakeNotification {
-    static permission = 'granted'
-    constructor(title, options) {
-      this.title = title
-      this.options = options
-      this.closed = false
-      sent.push(this)
-    }
-    close() {
-      this.closed = true
-    }
-  }
-
+test('client half follows the module loader contract and injects the DSH services it observes', async () => {
   let registration
   const window = {
     __ModuleLoader__: {
@@ -105,34 +87,39 @@ test('client half loads one debug toast through the module loader contract', () 
       },
     },
   }
-  const sandbox = { window, Notification: FakeNotification }
-  vm.createContext(sandbox)
-  vm.runInContext(read('client.js'), sandbox, { filename: 'client.js' })
+  vm.runInContext(read('client.js'), vm.createContext({ window }), { filename: 'client.js' })
 
   assert.equal(registration?.id, manifest().name, 'factory id must equal the package name')
 
-  const cleanups = []
-  const plugin = registration.factory(() => {
-    throw new Error('the debug toast must not require platform modules')
+  const requestedChunks = []
+  const fakeEngine = {
+    EVENT_KINDS: [],
+    DEFAULT_CONFIG: {},
+    classifyPending: () => undefined,
+    normalizeEvent: () => null,
+    decideEvent: () => [],
+  }
+  const plugin = registration.factory({
+    async async(specifier) {
+      requestedChunks.push(specifier)
+      return fakeEngine
+    },
   })
+
   assert.equal(typeof plugin.apply, 'function')
+  assert.deepEqual([...plugin.inject].sort(), ['locale', 'sessions', 'uiSession'], 'the Cordis services this plugin depends on')
 
   const ctx = {
+    uiSession: { sessionStatus: { getSnapshot: () => new Map(), subscribe: () => () => {} } },
+    sessions: { list: { getSnapshot: () => ({ byId: {} }), subscribe: () => () => {} } },
+    locale: { getSnapshot: () => ({ active: 'zh' }) },
     effect(callback) {
-      const cleanup = callback()
-      if (typeof cleanup === 'function') cleanups.push(cleanup)
+      callback()
     },
   }
+
   plugin.apply(ctx)
+  await new Promise((resolve) => setImmediate(resolve))
 
-  assert.equal(sent.length, 1, 'exactly one debug toast per load')
-  const [toast] = sent
-  assert.match(toast.title, /DSH Notice/)
-  assert.equal(toast.options.tag, 'dsh-notice-spike', 'tag lets the toast replace instead of stack')
-  assert.equal(toast.options.silent, false, 'sound stays on so its Windows behavior can be observed')
-  assert.match(toast.options.body, /build=\S+/, 'body identifies the client build for the HMR check')
-  assert.match(toast.options.body, /perm=granted/, 'body records the renderer notification permission')
-
-  for (const cleanup of cleanups) cleanup()
-  assert.equal(toast.closed, true, 'the effect must close its toast when the plugin unloads')
+  assert.deepEqual(requestedChunks, ['./client.engine.js'], 'the pure engine travels as a package-local chunk')
 })

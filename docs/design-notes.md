@@ -1,6 +1,6 @@
 # dsh-notice v1 实现设计笔记
 
-状态：设计已确认（2026-11-04）；P0（纯客户端插件 + Windows Toast）已实现，实测结论见 [spikes/02-toast-spike.md](spikes/02-toast-spike.md)。
+状态：设计已确认（2026-11-04）；P0（纯客户端插件 + Windows Toast）已实现（#2），客户端注意力检测 + 通知决策引擎已实现（#4，实测结论见 [spikes/04-client-detection.md](spikes/04-client-detection.md)），通知规则与宿主半身待 #5–#7。
 规格：[docs/spec.md](spec.md)。
 决策记录：[ADR-0001 Windows 系统通知](adr/0001-windows-system-notifications.md)、[ADR-0002 两阶段混合](adr/0002-two-phase-hybrid-client-host.md)。
 术语以 [GLOSSARY.md](../GLOSSARY.md) 为准。
@@ -97,10 +97,13 @@ Schema 由插件内 `Config`（schemastery）校验；`cordis.patch.yml` 的覆�
 
 ### P0：纯客户端插件
 
-- 包根：`package.json`（`exports: { ".": "./index.js", "./client": "./client.js", "./locale/*.json": ... }`、`dsh.bundle.patch: "./cordis.patch.yml"`、`dsh.client: { platform: "web", immediately: true, inject: [...] }`）。
+- 包根：`package.json`（`exports: { ".": "./index.js", "./client": "./client.js", "./locale/*.json": ... }`、`dsh.bundle.patch: "./cordis.patch.yml"`、`dsh.client: { platform: "web", immediately: true, inject: [] }`）。注意 `dsh.client.inject` 是**模块加载顺序**（本包 `require()` 的平台包），不是 Cordis 服务注入；本包不 require 任何平台包，保持空数组。
 - `index.js`：宿主半身先空实现 `export function apply() {}`（P1 填充）。
-- `client.js`：`window.__ModuleLoader__.load({ id: 'dsh-notice', factory(require) {...} })`；`apply(ctx)` 中 `ctx.inject(['uiSession', 'sessions', 'locale'], ...)`，`ctx.effect(() => subscribe(...))` 管理清理。
-- 通知决策逻辑独立成纯函数模块（输入 `{sessionId, kind, focused, viewedSessionId, config, pendingCount}` → 输出 `{notify, title, body, tag, silent}`），便于单测。
+- `client.js`：`window.__ModuleLoader__.load({ id: 'dsh-notice', factory(require) {...} })`；factory 返回的插件对象用 **Cordis `inject: ['uiSession', 'sessions', 'locale']`** 声明服务依赖，`ctx.effect(() => subscribe(...))` 管理清理。
+- 通知决策逻辑独立成纯函数模块 `client.engine.js`（package-local client chunk，`require.async('./client.engine.js')` 加载；见 [spikes/04](spikes/04-client-detection.md)）：
+  - 输入：归一化事件 + 运行态 + 配置；输出通知动作数组（`show` / 后续 `replace`、`close`）；
+  - #4 落地：`normalizeEvent`（会话身份/标题/语言）、`classifyPending`（`pendingInteraction.kind` 映射）、`decideEvent`（事件映射、按会话前台抑制、标题兜底、`tag`、`silent`），`node --test` 表驱动单测；
+  - #5 在同一 seam 上补：合并窗口、`另有 N 项`、消解、配置（`events`/`condition`/`mute`/`sound` 接线）、完整 i18n、子代理归并规则。
 - 发送：`new Notification()`（权限已被主进程放行，`tag` 合并，`silent` 按配置）；点击暂为尽力聚焦（见 P1）。
 
 ### P1：宿主半身补强
