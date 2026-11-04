@@ -105,7 +105,7 @@ async function mount(options = {}) {
   // fire because a fake fetch settles the race first, keeping every test synchronous.
   let timerId = 0
   const timers = new Map()
-  const statusHub = { statuses: new Map(), listener: undefined }
+  const statusHub = { statuses: new Map(), listeners: [] }
   let rows = options.rows ?? { 's-1': { displayTitle: 'Session A', retainedBy: {} } }
   let locale = options.locale ?? 'zh'
   let effectDispose
@@ -159,9 +159,9 @@ async function mount(options = {}) {
       sessionStatus: {
         getSnapshot: () => statusHub.statuses,
         subscribe(listener) {
-          statusHub.listener = listener
+          statusHub.listeners.push(listener)
           return () => {
-            statusHub.listener = undefined
+            statusHub.listeners = statusHub.listeners.filter((candidate) => candidate !== listener)
           }
         },
       },
@@ -180,8 +180,27 @@ async function mount(options = {}) {
   await flush()
   assert.deepEqual(requestedChunks, ['./client.engine.js'], 'the adapter loads the real engine chunk')
 
+  let instances = 1
+  if (options.doubleApply === true) {
+    // Simulate a hot reload that forgets to dispose the previous module instance: the
+    // plugin script runs again in the same page and applies a second copy.
+    vm.runInContext(read('client.js'), context, { filename: 'client.js' })
+    const registrationsAfterReload = registrations.filter((definition) => definition.chunk === undefined)
+    assert.equal(registrationsAfterReload.length, 2, 'the reload registers a second module instance')
+    const reloaded = registrationsAfterReload[1].factory({
+      async async() {
+        return engine
+      },
+    })
+    reloaded.apply(ctx)
+    await flush()
+    await flush()
+    instances = 2
+  }
+
   return {
     engine,
+    instances,
     notifications,
     warnings,
     fetches,
@@ -200,7 +219,7 @@ async function mount(options = {}) {
       statusHub.statuses = next
     },
     fireStatuses() {
-      if (typeof statusHub.listener === 'function') statusHub.listener()
+      for (const listener of [...statusHub.listeners]) listener()
     },
     dispose() {
       if (typeof effectDispose === 'function') effectDispose()
@@ -225,6 +244,17 @@ test('the client opens a document-relative EventSource for the precise host feed
     ['dsh-notice/config'],
     'the feed is an EventSource, not another fetch',
   )
+  mounted.dispose()
+})
+
+test('a hot-reloaded duplicate instance is disposed so one event yields one toast', async () => {
+  const mounted = await mount({ doubleApply: true })
+  assert.equal(mounted.instances, 2)
+  assert.equal(mounted.sources.length, 2, 'each load opened its own SSE feed')
+  assert.equal(mounted.sources[0].closed, true, 'the stale instance feed is closed by the singleton anchor')
+
+  runningEdge(mounted)
+  assert.equal(mounted.notifications.length, 1, 'the stale copy must not duplicate the notification')
   mounted.dispose()
 })
 

@@ -60,6 +60,25 @@
    */
   let toastSequence = 0
 
+  /**
+   * Page-level singleton anchor (a key on `window`). An older browser-half instance can
+   * survive a hot reload and then answer the same attention event with a second toast —
+   * measured during #7/#8 acceptance: duplicate notifications 3ms apart, one with the
+   * stale copy's English "Untitled session" fallback and one with the current session
+   * title. A new load therefore disposes the previous instance explicitly instead of
+   * trusting the host loader's teardown alone; a page reload / app restart also clears
+   * any pre-anchor leftovers.
+   */
+  const ACTIVE_ANCHOR = '__dshNoticeActiveInstance'
+  function disposePreviousInstance() {
+    try {
+      const previous = window[ACTIVE_ANCHOR]
+      if (previous !== undefined && previous !== null && typeof previous.dispose === 'function') previous.dispose()
+    } catch (error) {
+      warn('previous instance cleanup failed', error)
+    }
+  }
+
   window.__ModuleLoader__.load({
     id: 'dsh-notice',
     factory(require) {
@@ -67,7 +86,11 @@
         // Cordis service dependencies; resolved before apply() runs.
         inject: ['uiSession', 'sessions', 'locale'],
         apply(ctx) {
-          ctx.effect(() => {
+          // HMR singleton: dispose any previous browser-half instance before wiring this
+          // one, so duplicate live copies cannot each notify the same event (#8).
+          disposePreviousInstance()
+          const anchor = { dispose: () => {} }
+          const disposeEffect = ctx.effect(() => {
             let dispose = () => {}
             let cancelled = false
 
@@ -87,8 +110,21 @@
                 warn('cleanup failed', error)
               }
               dispose = () => {}
+              try {
+                if (window[ACTIVE_ANCHOR] === anchor) delete window[ACTIVE_ANCHOR]
+              } catch (_) {
+                /* ignore */
+              }
             }
           }, 'dsh-notice: attention events')
+          anchor.dispose = () => {
+            try {
+              if (typeof disposeEffect === 'function') disposeEffect()
+            } catch (error) {
+              warn('previous instance cleanup failed', error)
+            }
+          }
+          window[ACTIVE_ANCHOR] = anchor
         },
       }
     },

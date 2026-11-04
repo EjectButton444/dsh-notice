@@ -11,12 +11,12 @@
  *    Desktop window when a notification is clicked. The renderer cannot do this
  *    itself — a tray-hidden window is unreachable from the page, and `dsh://` navigations
  *    are swallowed — so the browser half asks the host, which spawns the shipped
- *    `focus.ps1` helper. The helper first wakes the window directly with
- *    `WM_SYSCOMMAND / SC_RESTORE` + `SetForegroundWindow` (this works even from the
- *    sandboxed low-integrity host, measured in docs/spikes/06-click-bridge.md) and
- *    falls back to `Start-Process 'dsh://open'`, the #3 baseline path where a second
- *    Desktop instance exits on the single-instance lock and the primary calls
- *    `focusPrimaryWindow()`.
+ *    `focus.ps1` helper. The helper's primary path posts Electron's own tray-click
+ *    message to `Electron_NotifyIconHostWindow` (`WM_APP+1` / icon id 2 /
+ *    `WM_LBUTTONDOWN`), so the app itself runs `focusPrimaryWindow()` and performs a
+ *    native restore + show + focus (the only path that leaves the renderer interactive;
+ *    measured in docs/spikes/06-click-bridge.md). Raw Win32 wake-up messages are the
+ *    fallback, and `Start-Process 'dsh://open'` is the last resort.
  * 3. Precise turn completion (#7): subscribe to the session log's `turn/end` events and
  *    broadcast only `reason.kind === 'completed'` as frames over a document-relative
  *    SSE route, `GET /dsh-notice/events`. The browser half needs the exact reason: its
@@ -67,13 +67,12 @@ const FOCUS_HEADER = 'x-dsh-notice-focus'
 const FOCUS_HEADER_VALUE = '1'
 
 /**
- * The window/focus helper shipped next to this file. Its first stage is the direct
- * Win32 path (posted `WM_SYSCOMMAND / SC_RESTORE` + `SetForegroundWindow`), which
- * works from the sandboxed low-integrity host; its fallback launches the registered
- * `dsh://open` protocol so the already running Desktop instance focuses itself via
- * `second-instance` -> `focusPrimaryWindow()` (the #3 baseline path).
- * Resolved through `import.meta.url` so a `link:` install and a copied install behave
- * the same.
+ * The window/focus helper shipped next to this file. Its primary stage posts Electron's
+ * tray-click message to the app's `Electron_NotifyIconHostWindow` so the application
+ * itself runs `focusPrimaryWindow()` (a native restore + show + focus; external Win32
+ * display leaves Chromium's renderer frozen). Raw Win32 wake-up messages are the
+ * first fallback and `dsh://open` the last resort. Resolved through `import.meta.url`
+ * so a `link:` install and a copied install behave the same.
  */
 const FOCUS_HELPER = fileURLToPath(new URL('./focus.ps1', import.meta.url))
 
