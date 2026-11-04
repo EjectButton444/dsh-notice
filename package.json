@@ -1,10 +1,32 @@
 {
   "name": "dsh-notice",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Windows system notifications when a DeepSeek Harness session needs human attention",
+  "version": "1.0.0",
+  "description": "Windows system notifications when a DeepSeek Harness session needs your approval, an answer, or has completed a turn",
   "license": "MIT",
   "type": "module",
+  "author": "EjectButton444",
+  "homepage": "https://github.com/EjectButton444/dsh-notice",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EjectButton444/dsh-notice.git"
+  },
+  "bugs": {
+    "url": "https://github.com/EjectButton444/dsh-notice/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "deepseek",
+    "deepseek-harness",
+    "notifications",
+    "windows",
+    "toast",
+    "plugin-market"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -24,7 +46,7 @@
     "dsh": ">=0.2.1-rc.5 <0.3.0"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node --test --test-isolation=none \"test/*.test.js\"",
     "check": "node --check index.js && node --check client.js && node --check client.engine.js"
   },
   "dsh": {

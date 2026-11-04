@@ -1,0 +1,38 @@
+# CI for dsh-notice: syntax, unit tests and package-contents sanity.
+# No install step is needed: the plugin has no dependencies and tests run on
+# Node's built-in test runner.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node 22 / test + pack
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Syntax check (ESM host + client halves)
+        run: |
+          node --check index.js
+          node --check client.js
+          node --check client.engine.js
+
+      - name: "Unit tests (single process: --test-isolation=none)"
+        run: node --test --test-isolation=none "test/*.test.js"
+
+      - name: Package contents sanity (npm pack --dry-run)
+        run: npm pack --dry-run

@@ -24,14 +24,36 @@ import { coveredByFiles, exists, manifest, read } from './helpers.js'
 
 const runtimeFiles = ['index.js', 'client.js', 'client.engine.js', 'focus.ps1', 'cordis.patch.yml', 'icon.svg', 'locale/en.json', 'locale/zh.json']
 
-test('manifest declares an installable dsh bundle with a browser half', () => {
+test('manifest declares a publishable dsh bundle with a browser half', () => {
   const pkg = manifest()
 
   assert.equal(pkg.name, 'dsh-notice')
-  assert.equal(pkg.private, true)
-  assert.equal(typeof pkg.version, 'string')
+  // v1.0.0 is the first public npm release; `private` must stay absent (or false)
+  // or `npm publish` refuses the package.
+  assert.ok(pkg.private === undefined || pkg.private === false, 'the package must be publishable to npm')
+  assert.equal(pkg.publishConfig?.access, 'public', 'unscoped public package: publishConfig.access must stay public')
+  assert.match(
+    pkg.version,
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/,
+    'the package version must be valid SemVer',
+  )
   assert.equal(pkg.type, 'module')
-  assert.ok(pkg.description, 'package description feeds the plugin list one-liner')
+  assert.ok(pkg.description, 'package description feeds the plugin list one-liner and the npm page')
+  assert.equal(pkg.license, 'MIT')
+
+  // Repository metadata: the npm page and the plugin market link back to the source.
+  assert.equal(pkg.author, 'EjectButton444')
+  assert.equal(pkg.homepage, 'https://github.com/EjectButton444/dsh-notice')
+  assert.equal(pkg.repository?.type, 'git')
+  assert.equal(pkg.repository?.url, 'git+https://github.com/EjectButton444/dsh-notice.git')
+  assert.equal(pkg.bugs?.url, 'https://github.com/EjectButton444/dsh-notice/issues')
+  assert.ok(
+    Array.isArray(pkg.keywords) && pkg.keywords.length >= 5,
+    'keywords make the plugin findable on npm and in the plugin market',
+  )
+  for (const keyword of ['dsh', 'dsh-plugin', 'deepseek', 'notifications', 'windows']) {
+    assert.ok(pkg.keywords.includes(keyword), `the ${keyword} keyword must stay advertised`)
+  }
 
   assert.equal(pkg.dsh?.bundle?.patch, './cordis.patch.yml')
   assert.equal(pkg.dsh?.client?.platform, 'web')

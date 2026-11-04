@@ -1,0 +1,63 @@
+{
+  "format": 1,
+  "title": {
+    "en": "DSH Notice Plugin Index",
+    "zh": "DSH 提醒插件索引"
+  },
+  "description": {
+    "en": "Plugin index for DSH Notice: Windows system notifications when a DeepSeek Harness session needs your attention.",
+    "zh": "DSH 提醒（DSH Notice）插件索引：当 DeepSeek Harness 会话需要你处理时发送 Windows 系统通知。"
+  },
+  "metadata": {
+    "categories": {
+      "notifications": {
+        "title": {
+          "en": "Notifications",
+          "zh": "通知"
+        }
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "dsh-notice",
+      "title": {
+        "en": "DSH Notice",
+        "zh": "DSH 提醒"
+      },
+      "description": {
+        "en": "Windows system notifications when a DeepSeek Harness session needs your approval, an answer, or has completed a turn.",
+        "zh": "会话需要你授权、回答，或回合完成时，发送 Windows 系统通知。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJEU0ggTm90aWNlIGJlbGwiPgogIDxwYXRoIGQ9Ik0zMiA4YTQgNCAwIDAgMSA0IDR2Mi4yYzguMSAxLjggMTMgOC40IDEzIDE3LjN2OC43bDQuMiA1LjZhMiAyIDAgMCAxLTEuNiAzLjJIMTIuNGEyIDIgMCAwIDEtMS42LTMuMkwxNSA0MC4ydi04LjdjMC04LjkgNC45LTE1LjUgMTMtMTcuM1YxMmE0IDQgMCAwIDEgNC00WiIgZmlsbD0iIzI0N2JiZiIvPgogIDxwYXRoIGQ9Ik0yNiA1MmgxMmE2IDYgMCAwIDEtMTIgMFoiIGZpbGw9IiMxYTVmOTYiLz4KPC9zdmc+Cg==",
+      "author": "EjectButton444",
+      "homepage": "https://github.com/EjectButton444/dsh-notice",
+      "repository": {
+        "url": "https://github.com/EjectButton444/dsh-notice"
+      },
+      "metadata": {
+        "category": "notifications",
+        "keywords": [
+          "dsh",
+          "dsh-plugin",
+          "deepseek",
+          "notifications",
+          "windows",
+          "toast"
+        ]
+      },
+      "versions": [
+        {
+          "version": "1.0.0",
+          "publishTimestamp": 1793818800,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.5 <0.3.0"
+          }
+        }
+      ]
+    }
+  ]
+}

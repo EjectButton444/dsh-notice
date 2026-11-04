@@ -1,59 +1,98 @@
-# dsh-notice
+# dsh-notice：仿codex的dsh消息提示插件
 
-把 DeepSeek Harness 会话里「需要人介入」的时刻变成 Windows 系统通知。
+> *『不愿意太冒险给agent开完全权限，但总因权限批准卡住影响工作效率？』*
 
-三类**注意力事件**（术语见 [GLOSSARY.md](./GLOSSARY.md)）：
+> *『常常因为将dsh且到后台而没注意到它的提问与执行结束？』*
 
-- **授权请求**——工具/沙箱权限等你确认；
-- **提问请求**——代理在等你回答；
-- **回合完成**——本轮结束，等你下一条指令。
+> *『喜欢codex风的消息提示体验？』*
 
-提醒行为：
+那么就来试试dsh-notice插件吧！
 
-- 通知只显示**会话标题 + 事件类型**，不暴露工具命令、问题原文或用户消息内容（通知会出现在锁屏与通知中心，隐私优先）；
-- 同一会话最多一条活跃通知，新事件替换内容；同时存在多个待处理项时追加「另有 N 项」；处理完（授权/回答/打开会话）自动关闭；
-- 点击通知把 DSH 窗口带到前台，v1.1 起还会直接切到事件所属会话；
-- 默认只在没看 DSH、或在看别的会话时提醒；可配置为总是提醒、全局静音、关闭提示音；文案跟随 DSH 界面语言（zh/en）。
+## 功能
 
-设计时参考了 OpenAI Codex 的通知行为（事件少而准、默认前台不打扰、按会话去重），设计决策记录在 [docs/adr/](./docs/adr/)。
+- **完全的仿codex设计**：dsh-notice将会在agent请求**授权**、向你**提问**、以及**执行完成**时发送简洁的系统提示并同时伴随“叮~”的一声，此时只需要点击弹窗就可以回到工作session了。
+- **更加智能可控的触发设计**：如同codex一般，这个弹窗仅会在你未聚焦session时弹出，同时新增了防堆叠功能以防被多个session完成消息轰炸，以及你可以自由的设置它的静默与否，便捷可靠
 
-## 状态
+## 效果展示
 
-实现阶段：全部功能完成（P0 客户端半身、P1 点击桥、v1.1 点击切会话、#7 精确回合完成）；**发布验收（#8）已完成**（2026-11-05 干净构建真机验收，逐项记录见 [docs/spikes/08-acceptance-release.md](docs/spikes/08-acceptance-release.md)）。
+同一个事件在通知里长这样（标题 = 会话标题，正文 = 事件类型）：
 
-- [x] 需求与设计访谈
-- [x] 领域术语表、ADR-0001 / ADR-0002
-- [x] P0：纯客户端插件跑通 Windows Toast
-- [x] P0：客户端注意力检测（授权 / 提问 / 回合完成）+ 通知决策引擎（前台抑制，含单测）
-- [x] P0：通知规则补全（每会话单条 / 替换 / 3s 合并 / 另有 N 项 / 消解关闭 / 配置 / zh-en 文案）
-- [x] P1：宿主点击桥——点击通知唤起 DSH 窗口（托盘隐藏 / 最小化 / 后台均实测通过，失败静默）
-- [x] v1.1：点击通知自动切换到等待操作的会话（`uiWorkspace.openSession`，真机验收通过）
-- [x] P1：宿主精确完成判定（宿主 `turn/end` + SSE；Stop 真机验收通过，报错/中断/fork/token 上限由同一宿主过滤分支的单测覆盖）
-- [x] 发布验收（#8）：真机清单收尾、文档定稿（已知限制见下）
+![完成通知：测试回复 / 本轮已完成](https://raw.githubusercontent.com/EjectButton444/dsh-notice/main/docs/assets/notification-complete.png)
+
+![提问通知：测试回复 / 在等你回答](https://raw.githubusercontent.com/EjectButton444/dsh-notice/main/docs/assets/notification-question.png)
+
+![权限通知：测试回复 / 需要你确认权限](https://raw.githubusercontent.com/EjectButton444/dsh-notice/main/docs/assets/notification-approval.png)
+
+不同处境下，它这样表现：
+
+| 你的处境 | dsh-notice 的行为 |
+|---|---|
+| 在别的应用里忙，代理请求工具权限 | 弹「需要你确认权限」；点击通知 → 回到会话并看到审批弹窗 |
+| 代理向你提问，你不在 DSH | 弹「在等你回答」；点击通知 → 回到会话直接回答 |
+| 长任务跑完，你已经在看别的东西 | 弹「本轮已完成」；点击通知 → 回到该会话继续下一条指令 |
+| DSH 在前台，但主视图是另一个会话 | 出事会话**仍然提醒**；点击通知自动切过去 |
+| 你正看着这条会话 | 不打扰（默认 `unfocused` 条件） |
+| 你按了 Stop 停掉本轮 | **不弹**「本轮已完成」 |
+| 同一个会话短时间连续多个事件 | 只保留一条通知并原地更新，不堆叠轰炸 |
+| 你处理完审批/回答完问题 | 对应通知自动关闭 |
 
 ## 安装
 
-### 命令行（本地目录安装）
-
-1. 退出 DSH（CLI 文档预期应用未运行；应用运行中安装也能生效，但那是 HMR 的附带能力，不是 CLI 契约）；
-2. 运行（把路径换成**本仓库的绝对路径**）：
-
-   ```powershell
-   dsh plugin --profile desktop add "D:\AI区\dsh小插件\notice"
-   ```
-
-   该命令以 `link:` 依赖安装本地目录，并把本插件 bundle 追加到 profile 的 `dsh.profile.bundles`；宿主半身与客户端半身一起安装，不需要手动改 profile 文件；
-3. 启动 DSH，Plugins → 已安装插件中出现「DSH 提醒」（`dsh-notice`）卡片，默认启用。
-
-### 插件管理器（GUI）
-
-Plugins → **Add plugin** → 选择「安装第三方插件」（install third-party plugin）→ 填入本仓库的绝对目录 → 勾选信任（trust）→ **Install**。安装后在已安装插件列表出现同一张卡片，可整行启用 / 禁用。
+v1.0.0 起通过 npm 包 `dsh-notice` 与 DSH 插件市场分发。安装后宿主半身与客户端半身一起装入，**Plugins → 已安装插件**中出现「DSH 提醒」（`dsh-notice`）卡片，默认启用。
 
 ### 环境要求
 
-- 仅 **Windows 桌面版 DSH**（v1）；实测基线 **DSH Desktop 0.2.1-rc.5 / Electron 44.7.0**；
+- 仅 **Windows 桌面版 DSH**；实测基线 **DSH Desktop 0.2.1-rc.5 / Electron 44.7.0**；
 - 插件声明 `engines.dsh: ">=0.2.1-rc.5 <0.3.0"`；版本不匹配时 DSH 会**静默跳过**本插件（不报错、也不加载）；
-- v1 从本地目录安装，未发布 npm 包。
+- 需要 DSH 桌面版初始化过的 `desktop` profile（首次打开 DSH 即已初始化）。
+
+### 方式一：DSH 插件市场（推荐）
+
+DSH 的「插件市场」不是中心化商店，而是用户自行添加的**自定义插件索引**。本仓库维护一个 format-1 索引：
+
+1. 打开 DSH → **Plugins** → **Discover** 标签；
+2. 点 **Add index source**，粘贴索引 URL：
+
+   ```text
+   https://raw.githubusercontent.com/EjectButton444/dsh-notice/main/plugin-market-index.json
+   ```
+
+3. 在 Discover 中搜索 `dsh-notice`（标题「DSH 提醒」），打开条目 → **Install**；
+4. 确认框会显示精确安装 spec `dsh-notice@1.0.0`、来源与兼容性；勾选信任提示后确认安装。
+
+> 索引内容与包由第三方（本仓库）提供，不在 DSH 官方审核范围内；DSH 会在添加索引源与安装时提示信任，请只添加你信任的索引。索引读取失败时，可在 **Index sources** 对话框里看到具体原因。若 DSH 版本超出插件的 `engines.dsh` 范围，Discover 会禁用 Install（提示没有兼容版本）——这属于宿主版本不匹配，升级 DSH 或等待插件适配。
+
+### 方式二：插件管理器（直接填 npm 包名）
+
+1. **Plugins** → **Add plugin** → 选 **安装第三方插件**（Install a third-party plugin）；
+2. 包名一栏填 `dsh-notice@1.0.0`（固定版本；只填 `dsh-notice` 则取最新版）；
+3. **Registry** 保持默认（pnpm 配置的 registry，通常为 npm 官方），勾选信任（trust）→ **Install**；
+4. 安装完成后可 **Enable now** 立即启用，或稍后在已安装插件列表里启用。
+
+### 方式三：命令行（npm 包）
+
+1. **完全退出 DSH**（`dsh plugin --profile desktop` 要求 desktop profile 已初始化、且应用未运行）；
+2. 运行：
+
+   ```powershell
+   dsh plugin --profile desktop add dsh-notice@1.0.0
+   ```
+
+   该命令把包管理参数转发给 profile 目录里的 pnpm（等价于在该 profile 内 `pnpm add dsh-notice@1.0.0`），并把新 bundle 追加到 profile 的 `dsh.profile.bundles`；宿主半身与客户端半身一起安装；
+3. 启动 DSH，Plugins → 已安装插件中出现「DSH 提醒」（`dsh-notice`）卡片。
+
+### 方式四：开发者本地目录（link）
+
+本地开发 / 调试仍可安装工作区目录（`link:` 依赖），改动可被 HMR 热替换：
+
+1. 退出 DSH（应用运行中安装也能生效，但那是 HMR 的附带能力，不是 CLI 契约）；
+2. 运行（把路径换成**本仓库的绝对路径**）：
+
+   ```powershell
+   dsh plugin --profile desktop add "D:\AIcode\dsh-notice"
+   ```
+
+3. 启动 DSH，Plugins → 已安装插件中出现「DSH 提醒」（`dsh-notice`）卡片，默认启用。
 
 ### 禁用 / 卸载
 
@@ -61,9 +100,15 @@ Plugins → **Add plugin** → 选择「安装第三方插件」（install third
 - 卸载：插件页 Remove，或运行 `dsh plugin --profile desktop remove dsh-notice`（改 profile；CLI 预期应用未运行）；
 - 若曾在 profile 的 `cordis.patch.yml` 里写过本插件的配置覆盖，卸载后可删除对应的 `- id: notice` 块（见下方「配置」）。
 
-### 更新
+## 使用方法
 
-本插件以本地目录（`link:`）方式安装：`git pull` 更新仓库后，客户端半身由 HMR 约 450ms 热替换；宿主半身（`index.js` / `cordis.patch.yml`）不会自动热替换，需要一次 profile 重组合或重启 DSH 才会加载新代码。由于是 `link:` 安装，本仓库目录需要保持原位（移动 / 删除目录会让插件失效）。详见 [docs/dev-loop.md](docs/dev-loop.md)。
+安装完基本什么都不用做：**离开 DSH 就行**。
+
+- 通知弹出时：**点一下** = 回到事件所属会话 + 唤起窗口；不点就留在通知中心，处理完会自动消失。
+- DSH 默认关闭窗口是**隐藏到托盘**（不是退出）；隐藏期间插件照常工作。完全退出 DSH 后不再有提醒。
+- 你按 **Stop**、本轮报错、中断、fork、token 上限——都不会收到「本轮已完成」。
+- 三类事件默认全开；想分别关闭、改成「总是提醒」、静音或关掉提示音，见下方「配置」。
+- 升级到新版本、DSH 升级后如何自检，见「版本与更新」与「升级后检查清单」。
 
 ## 配置
 
@@ -90,10 +135,20 @@ Plugins → **Add plugin** → 选择「安装第三方插件」（install third
 | `sound` | `true` | 是否带系统提示音 |
 | `mute` | `false` | 全局静音；`true` 时一条通知都不发 |
 
-- **整体替换，不深合并**：profile 里的 `config` 块会整体替换本插件该行的配置，缺失键回退默认值。**建议每次重述整块所有键**，避免只写部分键时把其余键重置为默认。
-- **生效路径**：保存 profile patch 后，开发环里约 1.7–2.1s 完成宿主活重组合（见 [spike 05](docs/spikes/05-notification-rules.md)），但客户端半身不会自动重新读取配置；正式使用以**修改后重启 DSH** 为准。
-- **v1 没有设置界面**：配置只走文件。宿主半身用只读路由 `GET /dsh-notice/config` 暴露该行配置原文（无覆盖时为 `{}`），校验与默认值由纯决策引擎 `normalizeConfig` 承担——非法/缺失值回退默认（单测覆盖）。
-- 不配置任何东西即默认行为：三类事件全开、仅未聚焦提醒、有提示音、不静音。
+- **整体替换，不深合并**：profile 里的 `config` 块会整体替换本插件该行的配置，缺失键回退默认值；**建议每次重述整块所有键**。
+- **生效路径**：保存 profile patch 后，开发环里约 1.7–2.1s 完成宿主活重组合，但客户端半身不会自动重新读取配置；正式使用以**修改后重启 DSH** 为准。
+- **没有设置界面**：v1 配置只走文件；宿主以只读路由 `GET /dsh-notice/config` 暴露配置原文，校验与默认值由纯决策引擎 `normalizeConfig` 承担（单测覆盖）。
+
+## 版本与更新
+
+当前版本 **v1.0.0**（见 [CHANGELOG.md](CHANGELOG.md)、[GitHub Releases](https://github.com/EjectButton444/dsh-notice/releases)）。
+
+- **升级到新版本**：DSH 目前不提供一键升级——插件市场对已安装插件只显示「Update available」状态，插件页也没有 Update 动作（官方内置插件除外）。升级 = **先卸载旧版本，再安装新版本**：
+  - 市场 / 插件页安装的：在已安装插件里 Remove 后，回到 Discover（或 Add plugin）安装新版本；
+  - CLI 安装的（推荐，会保留 bundle 的启用选择）：退出 DSH 后运行 `dsh plugin --profile desktop add dsh-notice@<新版本>`，再启动 DSH；
+- **升级后确认**：Plugins 页中的版本号应为新版本；按下方「升级后检查清单」抽查三类事件与点击通知；
+- **DSH 升级后**：本插件只支持 `engines.dsh` 声明的 DSH 范围，不匹配会被**静默跳过**（不报错）。DSH 大版本 / 新 rc 发布后，请按「升级后检查清单」自检；维护者会重跑真机清单、同步 `package.json` 与插件市场索引里的 `engines.dsh` 后发布新版本。
+- **本地开发（`link:`）安装的更新**：`git pull` 后客户端半身由 HMR 约 450ms 热替换；宿主半身（`index.js` / `cordis.patch.yml`）需要一次 profile 重组合或重启 DSH 才加载新代码。详见 [docs/dev-loop.md](docs/dev-loop.md)。
 
 ## 升级后检查清单
 
@@ -101,61 +156,31 @@ DSH 升级（尤其是 DSH / Electron 大版本）后逐项自检。通知是旁
 
 1. **版本匹配**：新 DSH 版本是否仍落在 `engines.dsh` 范围（`>=0.2.1-rc.5 <0.3.0`）内。不匹配会被**静默跳过**——表现为插件页没有这一行、也不报错；需要放宽范围并重新验证后再使用。
 2. **插件加载**：Plugins 插件页能看到 `dsh-notice` 行且处于启用状态；client graph（`GET /plugins/events`）里出现 `dsh-notice`（也可以直接看三类通知是否还会弹）。
-3. **宿主路由**：浏览器 / curl 访问 `http://127.0.0.1:<port>/dsh-notice/config` 应返回 200（端口以 DSH 实际监听为准；每次启动可能不同，可从窗口 URL / 进程参数查；无覆盖时响应 `{}`）；`curl -I http://127.0.0.1:<port>/dsh-notice/events` 应返回 200（说明精确完成的 SSE 路由已挂载）。
+3. **宿主路由**：访问 `http://127.0.0.1:<port>/dsh-notice/config` 应返回 200（端口以 DSH 实际监听为准，每次启动可能不同；无覆盖时响应 `{}`）；`curl -I http://127.0.0.1:<port>/dsh-notice/events` 应返回 200（说明精确完成的 SSE 路由已挂载）。
 4. **三类事件各触发一次**：切到其他应用后，分别制造授权、提问、回合完成，各应收到一条通知；用户按 Stop 不应弹「本轮已完成」。
-5. **点击通知**：点击后 DSH 窗口回到前台且可正常操作（托盘隐藏 / 最小化 / 后台三种状态）；v1.1 还应先切到事件所属会话。
-6. **依赖契约变化点**：本插件有两处依赖 DSH/Electron 内部契约，升级后重点复核：
-   - 点击桥依赖 **Electron 44.7.0 的托盘消息契约**（`Electron_NotifyIconHostWindow` + `WM_APP+1` + icon id 2 + `WM_LBUTTONDOWN`），见 [spike 06](docs/spikes/06-click-bridge.md)；
-   - 精确回合完成依赖 **`session/event` 的 `turn/end` 载荷**（只有 `reason.kind === 'completed'` 才提醒）与 Electron `dsh-app://` 同源转发，见 [spike 07](docs/spikes/07-precise-turn-completion.md)。
+5. **点击通知**：点击后 DSH 窗口回到前台且可正常操作（托盘隐藏 / 最小化 / 后台三种状态）；还应先切到事件所属会话。
+6. **依赖契约变化点**：点击桥依赖 **Electron 44.7.0 的托盘消息契约**（[spike 06](docs/spikes/06-click-bridge.md)）；精确回合完成依赖 **`session/event` 的 `turn/end` 载荷**与 `dsh-app://` 同源转发（[spike 07](docs/spikes/07-precise-turn-completion.md)）——这两处是 DSH 升级后最需要复核的点。
 7. **系统侧检查**：Windows 专注助手/勿扰是否开启、系统通知总开关与「DeepSeek Harness」的应用通知设置是否被关掉。
 
-## 已知限制
+## 目录结构
 
-### AUMID 与 Toast 实测结论
+| 路径 | 作用 |
+|---|---|
+| `index.js` | 宿主半身（ESM）：只读配置路由、点击桥、精确完成 SSE 下发 |
+| `client.js` | 浏览器半身（适配层）：订阅 DSH 状态、发出系统通知、处理点击 |
+| `client.engine.js` | 纯决策引擎（package-local client chunk）：映射/抑制/合并/消解/文案，唯一自动化 seam |
+| `focus.ps1` | 点击通知后的窗口恢复 helper（Electron 托盘原生恢复 → Win32 → `dsh://open` 兜底） |
+| `cordis.patch.yml` | bundle patch：插入 loader 行 `notice` |
+| `locale/` | 插件页中英文标题/描述 |
+| `plugin-market-index.json` | DSH 插件市场索引（format 1，npm 源） |
+| `test/` | `node --test` 单测（引擎 / 宿主 SSE / 客户端接驳 / 打包与索引契约） |
+| `docs/` | 规格、工单、spike 真机记录、ADR、发布与市场索引维护 |
+| `.github/workflows/ci.yml` | CI：语法检查 + 全量单测 + `npm pack --dry-run` |
 
-Windows 11 25H2 + DSH Desktop 0.2.1-rc.5 / Electron 44.7.0 的实测结论（完整记录见 [docs/spikes/02-toast-spike.md](docs/spikes/02-toast-spike.md)）：
+## 后言
 
-- **归属正确，无需降级**：DSH 没有显式调用 `app.setAppUserModelId`，但 Toast 横幅与通知中心实测归属安装包注册的 `electron.app.DeepSeek Harness`（显示名「DeepSeek Harness」），横幅使用 DSH 应用图标；通知设置里按 AUMID 正常归档、可单独开关。因此**不需要**采用原定的退路——宿主 PowerShell/WinRT Toast（见 [docs/risks.md](docs/risks.md) R1）。
-- **提示音**：默认播放 Windows 系统通知音（CoreAudio 实测触发后峰值从 0 到 0.32）。
-- **锁屏**：锁屏时通知可见，但内容被系统隐藏（不显示标题正文），与隐私目标一致。
-- **系统可能压制**：专注助手/勿扰、通知总开关或按应用的通知设置都会让 Toast 不出现；「没弹」时先查系统侧。
-- **仅 Windows**：v1 只支持 Windows 桌面版 DSH，macOS / Linux / 浏览器不支持。
+如果你用它少漏了几次审批、少空等了几轮长任务，欢迎给个 ⭐；有更好的想法或 bug，直接开 [Issue](https://github.com/EjectButton444/dsh-notice/issues) 告诉我。DSH 迭代很快，插件会跟着持续更新；发布与兼容维护方式见 [docs/release.md](docs/release.md)。
 
-结论：ADR-0001 维持——v1 的提醒渠道仍只用 Windows 系统通知。
-
-### 回合完成与提醒传输
-
-- **回合完成是精确判定**：宿主订阅 DSH `session/event` 的 `turn/end`，只有 `reason.kind === 'completed'` 才提醒；用户按 Stop（`aborted`）、报错、中断、fork、blocked、max-tokens 都不弹「本轮已完成」。客户端 SSE 首次连通后永久进入精确模式；首次连通前的极短过渡窗口（页面载入后通常 <1s）才用 `running` 边沿近似，之后即永久精确。
-- **SSE 无心跳、无重放**：断线期间完成的回合**不补发**（宁可漏提醒也不误提醒），EventSource 会自动重连；宿主重组合会主动断开流并触发重连。
-- 子代理的待处理交互归并到主会话（正文标注「来自子代理」）；子代理自己的回合完成不提醒。
-
-### 点击通知与窗口
-
-- 点击主路径是**触发 DSH 自己的托盘点击**（`focusPrimaryWindow()` 原生 restore+show+focus）：托盘隐藏 / 最小化 / 后台均能把窗口带回前台且可操作。实测恢复显示约 0.3–0.6s，前台聚焦受系统前台锁与负载影响（实测最慢约 2.6s）；失败静默，不影响会话。
-- **依赖 Electron 44.7.0 托盘消息契约**：外部 Win32 强制显示虽然能把窗口画出来，但 Chromium 渲染器会保持冻结（窗口可见却不可操作），所以只能走应用原生路径；DSH 升级 Electron 后需按上面的检查清单复核。
-- Windows 锁屏时系统不允许任何程序抢前台，点击不会（也不应）穿透锁屏。
-- 点击会先通过公开客户端服务 `uiWorkspace.openSession` 切到事件所属会话，再聚焦窗口；该服务缺失或调用失败时静默退化为「只聚焦、不切会话」（见 [ticket 09](docs/tickets/09-notification-click-open-session.md)）。点击子代理归并来的通知会打开其主会话。
-- **DSH 完全退出后不再有提醒**：提醒依赖 DSH 桌面进程/窗口存活；窗口关闭默认是隐藏到托盘，隐藏期间渲染进程与插件状态存活、通知照常工作。
-
-### 其他
-
-- **v1 没有设置界面**，配置只走 `cordis.patch.yml`，仅「禁用整行」开关可用。
-- 计划审批（`plan-review`）与失败/报错事件 v1 **不提醒**（范围外）。
-- **spec 期望「同一会话只保留一条通知并原地更新」，但实现受平台限制**：Windows/Electron 不支持 OS 级原地更新（同名 tag 替换会破坏后续关闭，见 [spikes/05](docs/spikes/05-notification-rules.md)），因此渲染层改为**唯一 tag + 先关闭旧通知再弹新通知**——活跃横幅始终一条，替换时会重新弹一次横幅/提示音；快速连续事件时通知中心可能残留一条旧条目（平台竞态，可手动清除）。这是已知实现偏差，记录于 #8 发布验收。
-- **极少数「开发期热重载」场景可能出现重复通知**：页面长期不重启、反复 HMR 重载后可能残留旧版浏览器半身实例——同一条事件会弹两条（一条中文带会话标题、一条英文回退标题「Untitled session」）。`client.js` 已加页面级单例清理（新加载会先 dispose 旧实例，含回归单测）；**存量旧实例需要重启一次 DSH 应用清除**。发布验收的干净构建上未再复现该双实例签名（回归单测是修复本身的主要证据）。
-- **旧通知点击不跳转**：DSH 重启或客户端热重载前创建的通知，其点击处理随旧实例销毁；Windows 通知中心仍保留这些条目，点击只关闭、不跳转。正常使用（未重启、未热重载）时点击会切回会话并唤起窗口；遇到旧通知建议在通知中心「清除全部」。
-- 以下项目由单测覆盖、尚未在真机逐项验收（见 [#8 发布说明](docs/tickets/08-acceptance-release.md)）：「另有 N 项」计数、子代理 pending 归并与子代理完成不提醒（本 harness 无法构造子代理人机交互）、多显示器 / 虚拟桌面下的窗口恢复。
-
-## 文档（本地优先）
-
-规划与实施记录以仓库内文档为准，GitHub issue 只作公开路线图：
-
-- 规格与设计：[docs/spec.md](docs/spec.md)、[docs/design-notes.md](docs/design-notes.md)
-- 工单与验证结论：[docs/tickets/](docs/tickets/)、[docs/spikes/](docs/spikes/)
-- 风险与决策：[docs/risks.md](docs/risks.md)、[docs/adr/](docs/adr/)
-- 本机开发环：[docs/dev-loop.md](docs/dev-loop.md)
-- 术语表：[GLOSSARY.md](./GLOSSARY.md)
-
-## 许可
+## 许可证
 
 [MIT](LICENSE)
