@@ -6,6 +6,8 @@ DSH 的客户端插件能精确区分「授权 / 提问」并知道用户此刻�
 
 **实现注记（2026-11-04，#6）**：点击桥的最终形态与本 ADR 所述不同——真机实测本机宿主上下文无法完成 `dsh://open` 单实例握手（第二实例在握手前退出；agent 工具 shell 为 Low 完整性、宿主 spawn 的 helper 为 Medium，问题在启动/沙箱上下文）；且外部 Win32 显示（`SC_RESTORE`/`ShowWindow`）会让 Chromium 渲染器保持冻结（窗口可见但点不动、无渲染更新）。最终实现：客户端点击 → 带标记头 `POST /dsh-notice/focus` → 宿主 spawn `focus.ps1`，**主路径**向应用进程的 `Electron_NotifyIconHostWindow` 投递 Electron 托盘点击消息（`WM_APP+1` / icon id 2 / `WM_LBUTTONDOWN`），让 DSH 自己的 `focusPrimaryWindow()` 原生 restore+show+focus；Win32 消息与 `dsh://open` 仅兜底。两阶段分工与「宿主补强 P0 短板」的决策不变；偏差与证据见 [spikes/06-click-bridge.md](../spikes/06-click-bridge.md)。
 
+**实现注记（2026-11-05，#8 发布核对）**：P1 宿主半身在 v1 只订阅 `session/event` 的 `turn/end`（经 SSE 下发精确完成原因）；本 ADR 正文提到的宿主 `approval/request`、`user-questions/request` 订阅 **v1 未实现**——P0 的 `pendingInteraction` 已覆盖审批/提问提醒，宿主侧细节对通知决策不是必需，留待 v2。两阶段分工与决策本身不变。
+
 Status: accepted
 
 ## Considered Options

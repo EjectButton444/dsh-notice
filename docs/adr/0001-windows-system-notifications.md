@@ -2,6 +2,8 @@
 
 用户需要知道 DSH 会话里「授权请求 / 提问请求 / 回合完成」这三类注意力事件，尤其在人已切到其他应用、DSH 不在前台时。DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）只在人看着 DSH 时有效；外部转发（手机/IM/邮件）需要额外的服务与账号。因此 v1 把提醒渠道统一为 Windows 系统通知（Toast），且只支持 Windows 桌面版 DSH：它进系统通知中心、能跨应用打断、点击可把 DSH 拉回前台，并且 DSH 桌面版已默认放行渲染进程的通知权限。放弃应用内提示（已存在，不重复造）与外部转发（留作 v2 扩展，不预留实现）。代价是提醒能力依赖 DSH 桌面进程/窗口存活，且 macOS/Linux 不支持——跨平台只留接口，不投入实现。
 
+**实现注记（2026-11-05，#8 发布核对）**：AUMID/归属风险已由真机实测收敛：渲染进程不调用 `app.setAppUserModelId` 时，Toast 归属（AUMID `electron.app.DeepSeek Harness`）、图标、声音、锁屏隐藏、通知中心合并均正常（[spikes/02](../spikes/02-toast-spike.md)）。因此「异常时退化为宿主 PowerShell Toast」的备选方案**未采用**，v1 的提醒渠道就是渲染进程 Web Notification；本 ADR 的决策不变。
+
 Status: accepted
 
 ## Considered Options

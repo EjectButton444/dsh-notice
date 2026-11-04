@@ -121,7 +121,7 @@
 
 - 仅 Windows 桌面版 DSH；Electron 44.7.0。
 - 窗口关闭 = 隐藏到托盘，渲染进程与插件状态存活，隐藏期间通知照常工作；重开不重载。
-- 无会话深链：点击最多把 DSH 拉回前台，无法定位到具体会话（v1 接受）。
+- 无会话深链：点击最多把 DSH 拉回前台，无法定位到具体会话（v1 接受）。**实现注记（2026-11-05，#9）**：v1.1 已解除——点击先经公开客户端服务 `uiWorkspace.openSession(target)` 选中事件所属会话再聚焦窗口（见 §5 P1「点击选会话」与 [tickets/09](tickets/09-notification-click-open-session.md)）；服务缺失/抛错时退回「只聚焦不切会话」。
 - 兼容声明以 `engines.dsh`（或 peer 匹配）为准；不匹配时 bundle 会被静默跳过。
 - 不使用深路径 import、不写自定义 session 事件类型、不依赖 `asar` 路径。
 
@@ -146,10 +146,10 @@
 
 | 风险 | 说明 | 处理 |
 |---|---|---|
-| AUMID / Toast 归属 | `app.setAppUserModelId` 未被调用，Toast 可能显示为其它归属、图标缺失 | P0 第一件事真机实测；必要时退化为宿主 PowerShell Toast |
-| 点击唤起 | 渲染进程内不可行；宿主 `dsh://open` 有 1–3 秒冷启动 | P1 点击桥，接受延迟 |
+| AUMID / Toast 归属 | `app.setAppUserModelId` 未被调用，Toast 可能显示为其它归属、图标缺失 | P0 第一件事真机实测；必要时退化为宿主 PowerShell Toast。**实现注记（2026-11-05，#8 发布核对）**：真机实测已关闭——未调用 `app.setAppUserModelId` 时归属（`electron.app.DeepSeek Harness`）/图标/声音/锁屏隐藏均正常，**不需要** PowerShell 退化方案，见 [spikes/02](spikes/02-toast-spike.md) |
+| 点击唤起 | 渲染进程内不可行；宿主 `dsh://open` 有 1–3 秒冷启动 | P1 点击桥，接受延迟。**实现注记（2026-11-04，#6）**：最终主路径为 Electron 托盘点击触发的应用原生 restore（窗口隐藏时实测 on_screen **355–527ms**），`dsh://open` 冷启动仅作最后兜底；见 [spikes/06](spikes/06-click-bridge.md) |
 | 客户端 `running` 近似 | Stop/报错也会触发完成提醒 | **#7 已收敛**：宿主只放行 `turn/end.reason.kind === 'completed'` 的帧经 SSE 下发，客户端首次 `open` 后关闭 P0 近似（迁移回退见 [spikes/07](spikes/07-precise-turn-completion.md)） |
-| 宿主 waterfall 顺序 | 不 `prepend` 会漏事件 | 代码中固定 `{ prepend: true }` 并加注释 |
+| 宿主 waterfall 顺序 | 不 `prepend` 会漏事件 | 代码中固定 `{ prepend: true }` 并加注释。**实现注记（2026-11-05，#8 发布核对）**：v1 宿主**不订阅任何 waterfall**——唯一宿主钩子是 observe-only 的 `ctx.on('session/event')`（#7，普通 emit，`prepend` 无意义；所有失败吞掉、只记日志）；宿主 `approval/request`、`user-questions/request` 订阅未实现（P0 `pendingInteraction` 已覆盖审批/提问提醒）。将来若订阅 waterfall，本条仍然适用 |
 | DSH 升级 | 内部服务形态可能变化 | 只用公开服务与文档化 API，升级后跑真机清单 |
 
 ## 10. 里程碑
