@@ -1,4 +1,4 @@
-Status: in-progress（2026-11-05：npm/GitHub 已发布，剩余插件市场 Discover 安装确认）
+Status: done (2026-11-05)
 
 ## Parent
 
@@ -25,7 +25,7 @@ Status: in-progress（2026-11-05：npm/GitHub 已发布，剩余插件市场 Dis
 - [x] `npm view dsh-notice` 能查到 `1.0.0`，且包内容包含宿主/客户端两半身 + `cordis.patch.yml` + `focus.ps1` + locale/icon（`dsh-notice@1.0.0`，11 files；`engines.dsh = >=0.2.1-rc.5 <0.3.0`；发布时间 `2026-11-04T20:11:37.203Z`）
 - [x] GitHub `main` 与本地一致、tag `v1.0.0` 存在、Release 页面包含安装/兼容/已知限制说明
 - [x] 插件索引 JSON 能通过 format-1 校验，`plugin-market-index.json` 与 npm 包元数据一致（name/version/engines.dsh；`publishTimestamp` 取 npm 实际发布时间）
-- [ ] 本机 DSH Discover 添加索引 URL 后能看到 `dsh-notice` 并可安装（用户确认）
+- [x] 本机 DSH Discover 添加索引 URL 后能看到 `dsh-notice` 并可安装（用户确认；索引源已写入本机 profile 的 `plugin-market.indexes`）
 - [x] CI 在 push 上通过；`docs/release.md` 覆盖 npm 发布/GitHub release/索引更新/DSH 升级维护/回滚
 - [x] README / CHANGELOG / 本地 ticket 更新完成
 
