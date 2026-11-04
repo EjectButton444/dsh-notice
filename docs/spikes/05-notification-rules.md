@@ -81,3 +81,7 @@
 - [docs/design-notes.md](../design-notes.md) §3–§5 已更新为实现后的规则与配置通路；[docs/dev-loop.md](../dev-loop.md) 增加了配置覆盖/重载的完整流程与行 id 陷阱。
 - 点击唤起仍是 P0 尽力聚焦（[#6](../tickets/06-click-bridge.md)）；回合完成精确语义（Stop/报错不弹）仍由 [#7](../tickets/07-precise-turn-completion.md) 收敛。
 - `sound` 实际静音、`en` 文案、子代理归并、多待处理计数列入 [#8](../tickets/08-acceptance-release.md) 真机清单。
+## 提交
+
+- 实现与单测：`6eed54e`（`feat: notification rules, close-on-resolve and config wiring (#5)`）
+- 验收记录与文档更新：随本文件所在提交。

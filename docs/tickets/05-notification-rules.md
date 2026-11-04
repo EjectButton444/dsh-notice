@@ -1,4 +1,4 @@
-Status: done (2026-11-04) — 实现与真机验收记录见 [docs/spikes/05-notification-rules.md](../spikes/05-notification-rules.md)。
+Status: done (2026-11-04) — 实现提交 `6eed54e`；真机验收记录见 [docs/spikes/05-notification-rules.md](../spikes/05-notification-rules.md)。
 
 ## Parent
 
