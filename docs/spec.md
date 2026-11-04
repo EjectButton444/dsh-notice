@@ -107,7 +107,7 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
 - 默认 `unfocused`：仅当 DSH 窗口未聚焦、或聚焦但当前主视图会话 ≠ 事件会话时发通知；`always` 时跳过该判定。
 - 声音：`silent` 由 `sound` 配置与静音状态决定。
 - 消解：授权/提问的 `pendingInteraction` 消失，或回合完成的会话被打开（成为主视图 / 未读完成被清除）时关闭通知。
-- 点击：P0 尽力聚焦；P1 由宿主执行 `Start-Process 'dsh://open'`（单实例 → `focusPrimaryWindow()` restore+show+focus），接受 1–3 秒冷启动。
+- 点击：P0 尽力聚焦；P1 由宿主执行点击桥（单实例 → `focusPrimaryWindow()` restore+show+focus），接受 1–3 秒冷启动。**实现注记（2026-11-04，#6）**：真机实测宿主半身运行在比 Desktop 窗口更低的完整性级别，从该环境启动 `dsh://open` 的第二实例在单实例握手前即退出，因此最终实现为「宿主端点 + `focus.ps1`」：**主路径**直接 `PostMessage(WM_SYSCOMMAND, SC_RESTORE)` + `SetForegroundWindow`（含 `AttachThreadInput` 前台锁兜底）唤醒/聚焦隐藏或最小化窗口，**兜底**仍执行 `Start-Process 'dsh://open'`；客户端 `notification.onclick` 带标记头 document-relative `POST /dsh-notice/focus`，失败静默。偏差与证据见 [spikes/06](spikes/06-click-bridge.md)。
 
 ## 兼容与约束
 

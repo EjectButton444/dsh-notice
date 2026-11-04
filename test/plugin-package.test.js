@@ -1,21 +1,28 @@
 // Contract tests for the dsh-notice plugin package.
 //
-// These verify the public boundaries the plugin depends on, not adapter internals:
+// These verify the public boundaries the plugin depends on, not the notification
+// decision rules:
 //   A. the package the DSH plugin manager installs (manifest, bundle patch, shipped files),
 //   B. the browser module contract consumed by DSH client-modules
-//      (`window.__ModuleLoader__.load` -> factory -> inject -> apply -> engine chunk).
+//      (`window.__ModuleLoader__.load` -> factory -> inject -> apply -> engine chunk),
+//   C. the click-bridge boundary: a renderer notification click POSTs the host route,
+//      and the host spawns the shipped `focus.ps1` helper. The helper's Win32 behavior
+//      itself only runs on a real Windows desktop and is covered by the real-machine
+//      record in docs/spikes/06-click-bridge.md.
 //
 // The notification decision engine is unit-tested at its own seam in
-// test/client-engine.test.js. The thin adapter (DSH state source, notification
-// sender, locale) is covered by the real-machine checklist in docs/, as decided in
-// docs/spec.md "Testing Decisions", so nothing here reaches inside it.
+// test/client-engine.test.js. The rest of the thin adapter (DSH state/locale sources,
+// the toast sender's OS behavior) is covered by the real-machine checklist in docs/,
+// as decided in docs/spec.md "Testing Decisions"; the two client tests below only
+// exercise the adapter's package-level contracts with DSH and the host half.
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import { coveredByFiles, exists, manifest, read } from './helpers.js'
 
-const runtimeFiles = ['index.js', 'client.js', 'client.engine.js', 'cordis.patch.yml', 'icon.svg', 'locale/en.json', 'locale/zh.json']
+const runtimeFiles = ['index.js', 'client.js', 'client.engine.js', 'focus.ps1', 'cordis.patch.yml', 'icon.svg', 'locale/en.json', 'locale/zh.json']
 
 test('manifest declares an installable dsh bundle with a browser half', () => {
   const pkg = manifest()
@@ -71,7 +78,7 @@ test('bundle patch inserts exactly one loader row named after the package', () =
   assert.deepEqual(names, ['dsh-notice'])
 })
 
-test('host half serves the profile config through one read-only web route', async () => {
+test('host half serves the profile config and mounts the notification click bridge', async () => {
   const host = await import('../index.js')
 
   assert.equal(host.name, 'dsh-notice')
@@ -79,7 +86,162 @@ test('host half serves the profile config through one read-only web route', asyn
   assert.equal(typeof host.apply, 'function')
 
   const routes = []
-  const ctx = {
+  const settings = {
+    events: { approval: false, question: true, turnComplete: true },
+    condition: 'always',
+    sound: false,
+    mute: false,
+  }
+  host.apply(fakeCtx(routes), settings)
+
+  assert.equal(routes.length, 2, 'the config route and the notification click bridge are both mounted')
+  const configRoute = routeAt(routes, '/dsh-notice/config')
+  const focusRoute = routeAt(routes, '/dsh-notice/focus')
+  assert.equal(configRoute.kind, 'exact')
+  assert.equal(focusRoute.kind, 'exact')
+
+  const response = fakeResponse()
+  configRoute.handler({ method: 'GET' }, response)
+  assert.equal(response.statusCode, 200)
+  assert.deepEqual(JSON.parse(response.body), settings, 'the browser half receives the effective profile config')
+  assert.equal(response.headers['cache-control'], 'no-store')
+
+  const rejected = fakeResponse()
+  configRoute.handler({ method: 'POST' }, rejected)
+  assert.equal(rejected.statusCode, 405, 'the config route is read-only')
+})
+
+test('click bridge spawns the shipped focus helper with an Electron-cleaned environment', async () => {
+  const host = await import('../index.js')
+  assert.equal(typeof host.createFocusBridge, 'function', 'the click bridge is testable without a DSH host')
+
+  const spawnCalls = []
+  const focusBridge = host.createFocusBridge({
+    platform: 'win32',
+    env: { PATH: 'C:\\Windows', ELECTRON_RUN_AS_NODE: '1', electron_no_attach_console: '1', SESSIONNAME: 'Console' },
+    spawn(command, args, options) {
+      spawnCalls.push({ command, args, options })
+      return { on() {}, unref() {} }
+    },
+  })
+
+  const routes = []
+  host.apply(fakeCtx(routes), {}, { focusBridge })
+
+  const response = fakeResponse()
+  routeAt(routes, '/dsh-notice/focus').handler({ method: 'POST', headers: { 'x-dsh-notice-focus': '1' } }, response)
+  assert.equal(response.statusCode, 204, 'the renderer gets an immediate empty acknowledgement')
+  assert.equal(response.body, undefined, '204 carries no body')
+
+  assert.equal(spawnCalls.length, 1, 'one click spawns one focus helper')
+  const [call] = spawnCalls
+  assert.equal(call.command, 'powershell.exe', 'PowerShell ships with Windows; the helper ships as a script')
+  assert.deepEqual(call.args.slice(0, 5), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File'])
+  assert.equal(call.args[5], fileURLToPath(new URL('../focus.ps1', import.meta.url)), 'the shipped helper script is executed by path')
+  assert.equal(call.args.length, 6, 'no diagnostic arguments leak into the production spawn')
+  assert.ok(exists('focus.ps1'), 'the helper must exist in the package')
+  // Node's detached spawn sets DETACHED_PROCESS, which makes powershell.exe with an
+  // ignored stdio exit without running the script (measured during #6 verification);
+  // the child is unref'ed below, so the host still does not wait for it.
+  assert.equal(call.options.detached, false, 'the helper runs as a plain unref’ed child')
+  assert.equal(call.options.stdio, 'ignore')
+  assert.equal(call.options.windowsHide, true)
+  assert.equal(call.options.env.ELECTRON_RUN_AS_NODE, undefined, 'a Node-mode second instance exits without focusing (spike #3)')
+  assert.equal(call.options.env.electron_no_attach_console, undefined, 'Electron-as-node switches are matched case-insensitively')
+  assert.equal(call.options.env.PATH, 'C:\\Windows', 'the rest of the environment is inherited')
+  assert.equal(call.options.env.SESSIONNAME, 'Console')
+})
+
+test('focus helper keeps its two-stage wake strategy and stays silent', () => {
+  const helper = read('focus.ps1')
+
+  // Stage 1: direct Win32 wake, the only path that works from the sandboxed host.
+  assert.match(helper, /WM_SYSCOMMAND/, 'the helper restores the window through taskbar-class messages')
+  assert.match(helper, /SC_RESTORE/, 'a tray-hidden or minimized window is woken with SC_RESTORE')
+  assert.match(helper, /SetForegroundWindow/, 'the helper then brings the window to the foreground')
+  // Stage 2: the #3 baseline protocol path, as a fallback only.
+  assert.match(helper, /Start-Process 'dsh:\/\/open'/, 'the dsh:// protocol remains the fallback path')
+  assert.match(helper, /RevealFocusFailed/, 'the protocol fallback is gated on "window found but could not be raised"')
+  assert.match(helper, /AttachThreadInput/, 'the helper has a foreground-lock workaround for the background case')
+  assert.match(helper, /Chrome_WidgetWin_1/, 'the window is located by Chromium class + product title')
+  // Side-channel rule: a helper failure must never raise into DSH.
+  assert.match(helper, /\$ErrorActionPreference = 'SilentlyContinue'/)
+  // Windows PowerShell 5.1 decodes BOM-less script files as ANSI; non-ASCII text in
+  // the helper would be corrupted (measured during #6 verification).
+  assert.match(helper, /^[\x00-\x7F]*$/, 'focus.ps1 must stay pure ASCII')
+})
+
+test('click bridge and its endpoint stay silent when the focus path fails', async () => {
+  const host = await import('../index.js')
+
+  // v1 supports Windows Desktop only; other platforms are a silent no-op.
+  const unsupported = host.createFocusBridge({
+    platform: 'linux',
+    env: {},
+    spawn() {
+      throw new Error('must not spawn outside Windows')
+    },
+  })
+  assert.equal(unsupported(), false)
+
+  // A synchronous spawn failure is reported as false, never thrown.
+  const broken = host.createFocusBridge({
+    platform: 'win32',
+    env: {},
+    spawn() {
+      throw new Error('spawn EPERM')
+    },
+  })
+  assert.equal(broken(), false)
+
+  // A child-process 'error' event must be swallowed: an unhandled one would crash the DSH host.
+  let errorListener
+  const flaky = host.createFocusBridge({
+    platform: 'win32',
+    env: {},
+    spawn() {
+      return {
+        on(event, listener) {
+          if (event === 'error') errorListener = listener
+        },
+        unref() {},
+      }
+    },
+  })
+  assert.equal(flaky(), true)
+  assert.equal(typeof errorListener, 'function', 'the child error event is subscribed')
+  assert.doesNotThrow(() => errorListener(new Error('spawn failed')), 'the side channel never propagates')
+
+  // The route refuses anything but a marked renderer POST and never leaks a bridge failure.
+  let bridgeCalls = 0
+  const routes = []
+  host.apply(fakeCtx(routes), {}, { focusBridge: () => { bridgeCalls += 1 } })
+  const route = routeAt(routes, '/dsh-notice/focus')
+
+  const unmarked = fakeResponse()
+  route.handler({ method: 'POST', headers: {} }, unmarked)
+  assert.equal(unmarked.statusCode, 403, 'a request without the renderer header is refused')
+  assert.equal(bridgeCalls, 0)
+
+  const wrongMethod = fakeResponse()
+  route.handler({ method: 'GET', headers: { 'x-dsh-notice-focus': '1' } }, wrongMethod)
+  assert.equal(wrongMethod.statusCode, 405)
+  assert.equal(bridgeCalls, 0)
+
+  const throwingRoutes = []
+  host.apply(fakeCtx(throwingRoutes), {}, {
+    focusBridge() {
+      throw new Error('bridge exploded')
+    },
+  })
+  const failing = fakeResponse()
+  routeAt(throwingRoutes, '/dsh-notice/focus').handler({ method: 'POST', headers: { 'x-dsh-notice-focus': '1' } }, failing)
+  assert.equal(failing.statusCode, 204, 'a failing bridge still acknowledges silently; the renderer never waits on it')
+})
+
+/** Minimal host plugin context double that records mounted routes. */
+function fakeCtx(routes) {
+  return {
     effect(callback) {
       const dispose = callback()
       assert.equal(typeof dispose, 'function', 'the route registration must be disposable')
@@ -92,30 +254,35 @@ test('host half serves the profile config through one read-only web route', asyn
       },
     },
   }
-  const settings = {
-    events: { approval: false, question: true, turnComplete: true },
-    condition: 'always',
-    sound: false,
-    mute: false,
+}
+
+/** One mounted route by exact path. */
+function routeAt(routes, path) {
+  const route = routes.find((candidate) => candidate.path === path)
+  assert.ok(route, `route ${path} must be mounted`)
+  return route
+}
+
+/** A `window` double that records `__ModuleLoader__.load` registrations, like DSH does. */
+function moduleLoaderWindow(extra = {}) {
+  return {
+    __ModuleLoader__: {
+      registrations: [],
+      load(definition) {
+        this.registrations.push(definition)
+      },
+    },
+    ...extra,
   }
-  host.apply(ctx, settings)
+}
 
-  assert.equal(routes.length, 1, 'exactly one route is mounted')
-  const [route] = routes
-  assert.equal(route.kind, 'exact')
-  assert.equal(route.path, '/dsh-notice/config')
-
-  const response = fakeResponse()
-  route.handler({ method: 'GET' }, response)
-  assert.equal(response.statusCode, 200)
-  assert.deepEqual(JSON.parse(response.body), settings, 'the browser half receives the effective profile config')
-  assert.equal(response.headers['cache-control'], 'no-store')
-
-  const rejected = fakeResponse()
-  route.handler({ method: 'POST' }, rejected)
-  assert.equal(rejected.statusCode, 405, 'the config route is read-only')
-
-})
+/** Execute client.js in a vm the way DSH client-modules does; returns the module registration. */
+function runClientScript(sandbox) {
+  vm.runInContext(read('client.js'), vm.createContext(sandbox), { filename: 'client.js' })
+  const registrations = sandbox.window.__ModuleLoader__.registrations
+  assert.equal(registrations.length, 1, 'client.js registers exactly one module')
+  return registrations[0]
+}
 
 /** Minimal Node response double for the host route handler. */
 function fakeResponse() {
@@ -135,14 +302,7 @@ function fakeResponse() {
 }
 
 test('client half follows the module loader contract, fetches the profile config and injects its DSH services', async () => {
-  let registration
-  const window = {
-    __ModuleLoader__: {
-      load(definition) {
-        registration = definition
-      },
-    },
-  }
+  const window = moduleLoaderWindow()
   const configFetches = []
   const sandbox = {
     window,
@@ -151,9 +311,9 @@ test('client half follows the module loader contract, fetches the profile config
       return { ok: true, json: async () => ({ mute: true }) }
     },
   }
-  vm.runInContext(read('client.js'), vm.createContext(sandbox), { filename: 'client.js' })
+  const registration = runClientScript(sandbox)
 
-  assert.equal(registration?.id, manifest().name, 'factory id must equal the package name')
+  assert.equal(registration.id, manifest().name, 'factory id must equal the package name')
 
   const requestedChunks = []
   const normalizedConfigs = []
@@ -196,4 +356,103 @@ test('client half follows the module loader contract, fetches the profile config
   assert.equal(configFetches[0].path, 'dsh-notice/config', 'document-relative, served by the host half')
   assert.equal(configFetches[0].method, 'GET')
   assert.deepEqual(normalizedConfigs[normalizedConfigs.length - 1], { mute: true }, 'the raw route payload goes through engine normalization')
+})
+
+test('notification clicks call the host focus bridge and swallow an unreachable endpoint', async () => {
+  const window = moduleLoaderWindow({
+    focusCalls: 0,
+    focus() {
+      this.focusCalls += 1
+    },
+  })
+  const fetches = []
+  const warnings = []
+  const notifications = []
+  class FakeNotification {
+    static permission = 'granted'
+    constructor(title, options) {
+      this.title = title
+      this.options = options
+      notifications.push(this)
+    }
+    close() {}
+  }
+  const sandbox = {
+    window,
+    // The vm context has no timers; client.js's config-fetch guard needs them.
+    setTimeout: (callback, ms) => setTimeout(callback, ms),
+    clearTimeout: (timer) => clearTimeout(timer),
+    console: {
+      warn(...args) {
+        warnings.push(args)
+      },
+    },
+    Notification: FakeNotification,
+    fetch(path, options) {
+      fetches.push({ path, method: options !== undefined ? options.method : undefined, headers: options !== undefined ? options.headers : undefined })
+      // The click bridge must be best effort: a dead host endpoint only warns.
+      if (path === 'dsh-notice/focus') return Promise.reject(new Error('host endpoint down'))
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    },
+  }
+  const registration = runClientScript(sandbox)
+
+  let statusListener
+  let statuses = new Map()
+  let rows = {}
+  const fakeEngine = {
+    normalizeConfig: () => ({ events: { approval: true, question: true, turnComplete: true }, condition: 'unfocused', sound: true, mute: false }),
+    classifyPending: () => undefined,
+    emptyState: () => ({ sessions: {} }),
+    reduce: (state, observation) =>
+      observation.type === 'attention'
+        ? { state, actions: [{ kind: 'show', event: 'turnComplete', title: 'Session A', body: 'Turn completed', tag: 's1', silent: false }] }
+        : { state, actions: [] },
+  }
+  const plugin = registration.factory({
+    async async() {
+      return fakeEngine
+    },
+  })
+  plugin.apply({
+    uiSession: {
+      sessionStatus: {
+        getSnapshot: () => statuses,
+        subscribe(listener) {
+          statusListener = listener
+          return () => {}
+        },
+      },
+    },
+    sessions: { list: { getSnapshot: () => ({ byId: rows }), subscribe: () => () => {} } },
+    locale: { getSnapshot: () => ({ active: 'en' }) },
+    effect(callback) {
+      callback()
+    },
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  // `running: true -> false` edge -> the P0 turn-completion toast (ticket #5 rules).
+  statuses = new Map([['s1', { running: true }]])
+  statusListener()
+  statuses = new Map([['s1', { running: false }]])
+  rows = { s1: { displayTitle: 'Session A', retainedBy: {} } }
+  statusListener()
+
+  assert.equal(notifications.length, 1, 'the adapter renders the engine action as a notification')
+  const [toast] = notifications
+  assert.equal(typeof toast.onclick, 'function')
+
+  toast.onclick()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const focusRequest = fetches.find((call) => call.path === 'dsh-notice/focus')
+  assert.ok(focusRequest, 'clicking the notification calls the host click bridge')
+  assert.equal(focusRequest.method, 'POST')
+  assert.equal(focusRequest.headers['x-dsh-notice-focus'], '1', 'the renderer marks the click-bridge intent header')
+  assert.equal(window.focusCalls, 1, 'the renderer keeps its P0 best-effort focus as a fallback')
+  assert.ok(
+    warnings.some((args) => String(args[0]).includes('host focus request failed')),
+    'an unreachable host endpoint is only warned about, never thrown into DSH',
+  )
 })

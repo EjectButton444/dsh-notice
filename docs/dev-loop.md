@@ -14,7 +14,8 @@
 - 安装方式：`dsh plugin --profile desktop add "D:\AI区\dsh小插件\notice"`（与 `plugin_manager install_bundle` 共用 package operations，写入 `link:` 依赖并把 bundle 追加到 `dsh.profile.bundles`）。
 - profile `package.json`：`"dsh-notice": "link:D:/AI区/dsh小插件/notice"`；`profiles/desktop/node_modules/dsh-notice` 是指向仓库的 junction。
 - 安装时进程里激活的 host 行 id 是 `dsh-notice`；仓库 `cordis.patch.yml` 已按 spec 改为 `notice`，**下次 DSH 重启后生效**。判断当前激活状态以 client graph（`GET /plugins/events`）里是否存在 `dsh-notice` 为准。
-- **当前实现状态（#4 之后）**：客户端半身已订阅注意力状态并发送真实通知，客户端半身拆成 `client.js`（适配层）+ `client.engine.js`（纯决策引擎 chunk）；#2 的一次性调试 Toast 已删除，客户端加载/热重载不再弹调试通知。
+- **当前实现状态（#6 之后）**：客户端半身 = `client.js`（适配层）+ `client.engine.js`（纯决策引擎 chunk）；宿主半身 = `index.js`（只读配置路由 + 点击桥端点）+ `focus.ps1`（窗口恢复 helper）。通知点击已接入宿主点击桥（`POST /dsh-notice/focus`，标记头 `x-dsh-notice-focus: 1`）；回合完成的 P0 近似（Stop/报错也弹）仍由 #7 收敛。
+- **宿主路由（当前）**：`GET /dsh-notice/config`（#5，返回 profile 行 config 原文；无覆盖为 `{}`）、`POST /dsh-notice/focus`（#6，带标记头才接受；立即 204，spawn `focus.ps1`）。客户端都以 document-relative 路径调用，直接 curl 用 `http://127.0.0.1:<port>/...`。
 - 卸载/禁用：插件页开关或 Remove，或 `dsh plugin --profile desktop remove dsh-notice`（改 profile；本机只有这一个 dev profile）。
 
 ## 开发环
@@ -22,7 +23,7 @@
 - **客户端半身**（`client.js`）：`dsh-client-hmr` 以 500ms stat 轮询已 link 包，保存后约 **450ms** 热重载并重跑 `apply`（实测 449ms）。
 - **纯决策引擎**（`client.engine.js`）：以 package-local client chunk 形式由 `client.js` 用 `require.async('./client.engine.js')` 加载。**HMR 只监视 `client.js` 的字节，改 `client.engine.js` 本身不会触发重载**（实测 graph rev 不变）——改引擎后保存一次 `client.js`（touch/加删空行均可）才会重载并拉新 chunk。若忘记这一步，会出现「新 `client.js` + 旧 engine chunk」混搭，新调用的引擎导出未定义、异常只进 `console.warn`，表现为**通知静默失效**（#4 实测踩过）。
 - 客户端脚本会被 HMR **重新执行**：顶层 `const/let` 在第二次执行时抛 "already declared" 且静默失败 → 代码必须整体包在 IIFE 内（`client.js` 顶部有注释）。
-- **宿主半身**（`index.js`、`cordis.patch.yml`）：不会自动热替换；需要一次 profile 重组合（改动并保存 profile 的 `cordis.patch.yml`，或在插件页关/开一行）或重启 DSH。
+- **宿主半身**（`index.js`、`cordis.patch.yml`、`focus.ps1`）：`index.js`/`cordis.patch.yml` 不会自动热替换；需要一次 profile 重组合（改动并保存 profile 的 `cordis.patch.yml`，或在插件页关/开一行）或重启 DSH。**重组合会替换「加载文件已变化」的 linked 包代码**（#6 实测：改 `index.js` → 保存 profile patch → ~2–4s 后新代码生效；可在响应里加临时头/日志确认）。`focus.ps1` 是每次点击 spawn 时才读的文件，改它本身不需要重组合。
 - 改 `package.json` 的 `exports`/`files`/`dsh` 字段后，需要重新安装或重启才被读取。
 - **改插件配置（#5 起）**：配置在 profile `cordis.patch.yml` 的本插件 loader 行。注意**重组合后行 id 是 `notice`**（仓库 bundle patch 的值），写 `- id: dsh-notice` 的覆盖会被静默跳过；正确流程：
   1. 在 `C:\Users\19533\.dsh\profiles\desktop\cordis.patch.yml` 追加/修改 `- id: notice / name: dsh-notice / config: {...}`；
@@ -42,6 +43,7 @@
 - `notification-db-read.mjs` — 读取 Windows 通知数据库（`%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db` 的 .db + .db-wal 快照）输出当前通知中心里的每条 Toast：AUMID、display、title、body、tag、created。**这是 #4 之后最可靠的通知存在性/内容证据通道**（WinRT 被拒时仍可用）。
 - `watch-notifications.ps1` / `window-state.ps1` / `probe-host.mjs` — 通知轮询采集、DSH 窗口状态 JSON、host client graph 探针。
 - `.scratch/verify/`（#5 新增）— `set-plugin-config.ps1`（可逆改 profile 配置、自动探测行 id `notice`、备份/恢复）、`probe-plugin-config.mjs`（断言 `/dsh-notice/config` 内容）、`watch-notification-state.ps1`（按 tag/title 轮询通知生命周期）、`05-config-notes.md`（配置生效路径的源码+实测证据、验收步骤）。
+- `.scratch/verify/`（#6 新增）— `06-click-bridge.ps1`（隐藏到托盘 / 最小化 / 后台三场景：隐藏→POST `/dsh-notice/focus`→测量 on_screen/前台耗时；含 `dsh://open` 脏环境对照）、`06-window-timeline.ps1`（100ms 采样窗口状态/前台窗口，供真人点击相关性分析）、`06-click-bridge.json`（最近一次测量结果）。
 - `audio-peak.ps1` — CoreAudio 默认播放设备峰值采样，用于判断通知音是否播放（静音基线≈0）。
 - `beacon-server.mjs` — `127.0.0.1:57123` 的临时打点接收器；client 侧 `fetch` 相对/绝对地址均可用，记录到 `beacon.jsonl`（隐藏窗口点击投递测试用过）。
 - `.scratch/notify-debug/`（#4 新增）— `beacon.mjs`（127.0.0.1:57124，记录插件决策打点；打点代码已从源码移除）、`watch.ps1`（定时截图右下角 toast 区域 + 记录前台窗口）、`win.ps1`（最小化/恢复 DSH 窗口）、`graph-rev.mjs`（读 client graph rev，判断 HMR 是否生效）、`uia-session.ps1`（UIA 探针，本机 Electron 未暴露可用的 web UIA 树）。
@@ -52,7 +54,11 @@
 
 ## 陷阱
 
-- **`ELECTRON_RUN_AS_NODE=1`**：DSH 宿主环境带此变量并传染给本会话 shell 与子进程。直接 `Start-Process 'dsh://open'` 时被启动的 `DeepSeek Harness.exe` 会以 **Node 模式**运行、约 50–140ms 退出（exit 1），不触发单实例唤起；需要时先从环境删除该变量再启动（#6 点击桥必须处理）。
+- **`ELECTRON_RUN_AS_NODE=1`**：DSH 宿主环境带此变量并传染给本会话 shell 与子进程。直接 `Start-Process 'dsh://open'` 时被启动的 `DeepSeek Harness.exe` 会以 **Node 模式**运行、约 50–140ms 退出（exit 1），不触发单实例唤起；需要时先从环境删除该变量再启动（#6 点击桥已处理）。**#6 补充**：本会话工具进程/宿主半身还是 **Low 完整性级别**（`whoami /groups`），从低完整性环境启动的桌面第二实例会在单实例握手前直接退出（实测退出码 `0x80000003`），即使 env 已清洗也**无法用 `dsh://open` 唤起窗口**；窗口恢复改用 `WM_SYSCOMMAND` 消息（见下一条）。
+- **低完整性下可用的窗口控制（#6 实测）**：从沙箱 shell 对 DSH 窗口 `PostMessage(WM_SYSCOMMAND, SC_CLOSE)` 可走应用自身 close-to-tray 隐藏、`SC_RESTORE` 约 4ms 恢复显示并可聚焦；但 `WM_CLOSE` 与 `ShowWindow` API 被拦（`ShowWindow` 返回 False）。宿主点击桥的 `focus.ps1` 主路径即基于此。
+- **Node spawn 陷阱（#6 实测）**：`detached: true` + `stdio: 'ignore'` 在 Windows 会让 `powershell.exe` **立即退出（code 0）而完全不执行脚本**；需要跑 helper 时用普通子进程 + `unref()`（生产代码已如此并注释）。
+- **`.ps1` 必须纯 ASCII 或 UTF-8 with BOM**：Windows PowerShell 5.1 对无 BOM 脚本按 ANSI 解码；`focus.ps1` 含中文会把路径/参数解码成乱码（曾误导排查）。脚本内注释一律英文、文档放 Markdown。
+- **锁屏会污染窗口/聚焦类验证**：Windows 锁屏时 `GetForegroundWindow()` 是「Windows 默认锁屏界面」，任何 `SetForegroundWindow` 都失败；`on_screen`/隐藏恢复仍可测。做点击唤起验收前先确认已解锁（可全屏截图确认）。
 - **合成鼠标点击不能激活 Windows Toast**（Shell 忽略注入输入）；点击相关验证必须真人操作一次（或 `onclick` 打点 + 人点）。
 - **合成鼠标点击/键盘输入对本机 DSH 窗口整体无效**（#4 实测：`mouse_event` 点击侧边栏会话行无任何反应；推测 DSH 窗口以更高完整性运行，UIPI 丢弃注入输入）。并且 Electron 未启用渲染进程无障碍：UIA 树的 descendants 只有 `Chrome Legacy Window`，看不到 web 内容。⇒ **切换主视图、点插件页这类 UI 操作只能真人做**，agent 侧的可自动化观测限于窗口状态、截图、通知数据库、host HTTP/SSE。
 - 子代理/teammate 会话里调用 `ask_user_question` 会被拒：`human interaction is unavailable while the calling agent is owned by another live agent`（#4 实测）。**提问/审批事件只能由 Lead 顶层会话或真人触发**；子代理会话不会产生可观测的 pending 事件。

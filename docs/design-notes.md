@@ -1,6 +1,6 @@
 # dsh-notice v1 实现设计笔记
 
-状态：设计已确认（2026-11-04）；P0 客户端半身已完成：#2 插件/Toast、#4 注意力检测 + 决策引擎（[spikes/04](spikes/04-client-detection.md)）、#5 通知规则与配置（[spikes/05](spikes/05-notification-rules.md)）。宿主半身补强（点击桥、精确完成判定）待 #6–#7。
+状态：设计已确认（2026-11-04）；P0 客户端半身已完成：#2 插件/Toast、#4 注意力检测 + 决策引擎（[spikes/04](spikes/04-client-detection.md)）、#5 通知规则与配置（[spikes/05](spikes/05-notification-rules.md)）；P1 点击桥已完成：#6（[spikes/06](spikes/06-click-bridge.md)）；精确完成判定待 #7。
 规格：[docs/spec.md](spec.md)。
 决策记录：[ADR-0001 Windows 系统通知](adr/0001-windows-system-notifications.md)、[ADR-0002 两阶段混合](adr/0002-two-phase-hybrid-client-host.md)。
 术语以 [GLOSSARY.md](../GLOSSARY.md) 为准。
@@ -107,13 +107,13 @@
   - `reduce(state, observation, runtime, config, now) -> { state, actions }`；observation = `attention` / `pendingResolved` / `viewed`；actions = `show` / `replace` / `close`；
   - 规则全在引擎：事件映射与 zh/en 文案、按会话前台抑制、`events`/`condition`/`sound`/`mute`、单条与原地替换、3 秒同类合并窗口、「另有 N 项」、消解、子代理归并、标题兜底、`tag`（会话 id）；
   - `node --test` 表驱动单测（`test/client-engine.test.js`）。
-- 发送：`new Notification()`（权限已被主进程放行）；**Windows/Electron 同 tag 替换会让新对象的 `close()` 失效**（实测），故渲染层 toast 用 `${会话 tag}#${n}` 唯一 tag，替换/消解都由适配层显式关闭当前句柄；点击暂为尽力聚焦（见 P1）。
+- 发送：`new Notification()`（权限已被主进程放行）；**Windows/Electron 同 tag 替换会让新对象的 `close()` 失效**（实测），故渲染层 toast 用 `${会话 tag}#${n}` 唯一 tag，替换/消解都由适配层显式关闭当前句柄；点击处理见 P1 点击桥（#6）。
 
 
 ### P1：宿主半身补强
 
-- 宿主半身订阅 `issue/request` 类事件（`prepend: true` + `next()`）与 `session/event` 的 `turn/end`，把「精确完成原因」通过 **SSE** 推给客户端（免构建通道：`ctx.webServer.register()`，客户端 document-relative `fetch('plugins/notice/events')`，与 `dsh-client-hmr` 同款）。
-- 点击桥：客户端通知点击 → `POST` 宿主端点 → 宿主执行 `Start-Process 'dsh://open'`（单实例 → `focusPrimaryWindow()` restore+show+focus）。渲染进程内无法直接唤起托盘窗口，故必须走宿主。
+- 宿主半身订阅 `issue/request` 类事件（`prepend: true` + `next()`）与 `session/event` 的 `turn/end`，把「精确完成原因」通过 **SSE** 推给客户端（免构建通道：`ctx.webServer.register()`，客户端 document-relative `fetch('plugins/notice/events')`，与 `dsh-client-hmr` 同款）——**#6 只做了点击桥，#7 做本段**。
+- 点击桥（#6，已实现，见 [spikes/06](spikes/06-click-bridge.md)）：客户端通知点击 → 带标记头 document-relative `POST /dsh-notice/focus` → 宿主立即 204 并 spawn 随包发布的 `focus.ps1`；helper 先直接 Win32 `PostMessage(WM_SYSCOMMAND, SC_RESTORE)` + `SetForegroundWindow`（后台场景再加 `AttachThreadInput` 前台锁兜底与一次 `SC_RESTORE`），窗口存在但确实无法抬前时才兜底 `Start-Process 'dsh://open'`。spawn 环境先清洗 `ELECTRON_RUN_AS_NODE`；**不要用 Node 的 `detached: true`**（Windows 上配合 `stdio: 'ignore'` 会让 PowerShell 立即退出），用普通子进程 + `unref()`。渲染进程内无法直接唤起托盘窗口，故必须走宿主。
 - 宿主仍只做旁路：任何失败只记日志，绝不阻塞会话。
 
 ## 6. 约束与兼容

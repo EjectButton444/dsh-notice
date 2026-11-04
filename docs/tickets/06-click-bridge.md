@@ -1,4 +1,4 @@
-Status: pending
+Status: in-progress (2026-11-04) — 实现完成（`client.js` 点击 POST → `index.js` 端点 → `focus.ps1` 两段式唤起）；自动化真机验证与偏差记录见 [docs/spikes/06-click-bridge.md](../spikes/06-click-bridge.md)。前台聚焦 + 真人点击验收待验证机解锁后补齐。
 
 ## Parent
 
@@ -22,8 +22,14 @@ Status: pending
 
 - [ ] 点击通知能把 DSH 窗口带到前台（窗口在后台时）
 - [ ] 窗口隐藏到托盘时，点击通知也能唤起窗口
-- [ ] 宿主端点故障时点击静默失败，不影响会话
-- [ ] 若采用降级方案，偏差与原因记录在 issue 评论
+- [x] 宿主端点故障时点击静默失败，不影响会话（端点始终 204、客户端不读响应、spawn 异常/子进程 error 全吞；单测覆盖）
+- [x] 若采用降级方案，偏差与原因记录在 issue 评论（见下方「实现偏差」与 [spikes/06](../spikes/06-click-bridge.md)；GitHub issue #6 只放一行指针）
+
+## 实现偏差（#6 实测，来自 #3 结论的适用条件修正）
+
+- #3 的「`Start-Process 'dsh://open'` 即可唤起隐藏窗口」在**低完整性宿主**下不成立：本机宿主半身/工具进程是 Low 完整性，第二实例在单实例握手前退出（退出码 `0x80000003`），窗口不恢复。
+- 最终点击桥 = **直接 Win32 消息主路径**（`PostMessage(WM_SYSCOMMAND, SC_RESTORE)` + `SetForegroundWindow`，即 #3 记录的 Win32 退路）+ **`dsh://open` 兜底**；客户端仍只负责 document-relative `POST /dsh-notice/focus`，宿主 `focus.ps1` 执行恢复。
+- 实现中还规避了两个陷阱：Node `detached: true` + `stdio: 'ignore'` 会让 `powershell.exe` 不执行脚本直接退出；`focus.ps1` 必须纯 ASCII（PowerShell 5.1 对无 BOM 脚本按 ANSI 解码）。
 
 ## Blocked by
 

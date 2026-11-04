@@ -11,10 +11,11 @@
  *
  * The pure reducer lives in ./client.engine.js (package-local client chunk). This
  * file only turns DSH state changes into engine observations (attention /
- * pendingResolved / viewed), applies the returned actions to Web Notifications, and
- * fetches the profile config from the host half (`GET /dsh-notice/config`). It is a
- * read-only side channel: every callback is wrapped so an exception can never
- * disturb DSH (ADR-0002).
+ * pendingResolved / viewed), applies the returned actions to Web Notifications,
+ * fetches the profile config from the host half (`GET /dsh-notice/config`), and asks
+ * the host click bridge to focus the window on notification click
+ * (`POST /dsh-notice/focus`, ticket #6). It is a read-only side channel: every
+ * callback is wrapped so an exception can never disturb DSH (ADR-0002).
  *
  * Everything stays inside one IIFE: HMR re-executes client scripts, so a
  * top-level `const`/`let` would throw "already declared" on the second execution
@@ -26,6 +27,14 @@
   const ENGINE_CHUNK = './client.engine.js'
   /** Document-relative route served by the host half (index.js). */
   const CONFIG_PATH = 'dsh-notice/config'
+  /**
+   * Host click bridge (#6). The renderer cannot wake a tray-hidden window
+   * (`window.focus()` is a no-op there and `dsh://` navigations are swallowed), so a
+   * notification click asks the host to restore + show + focus the window.
+   */
+  const FOCUS_PATH = 'dsh-notice/focus'
+  /** Renderer-only marker; the host refuses unmarked requests. */
+  const FOCUS_HEADER = 'x-dsh-notice-focus'
   const LOG_PREFIX = '[dsh-notice]'
   /** A hung config fetch must not leave notifications silently disabled forever. */
   const CONFIG_TIMEOUT_MS = 3000
@@ -111,6 +120,23 @@
   }
 
   /**
+   * Ask the host half to restore + show + focus the DSH window. Fire-and-forget: the
+   * renderer never reads the response, and a broken host endpoint only warns — a click
+   * must never surface an error into the session (ADR-0002).
+   */
+  function requestHostFocus() {
+    try {
+      if (typeof fetch !== 'function') return
+      const request = fetch(FOCUS_PATH, { method: 'POST', headers: { [FOCUS_HEADER]: '1' } })
+      if (request !== undefined && request !== null && typeof request.catch === 'function') {
+        request.catch((error) => warn('host focus request failed (silent)', error))
+      }
+    } catch (error) {
+      warn('host focus request failed (silent)', error)
+    }
+  }
+
+  /**
    * Subscribe to the attention sources, translate transitions into observations for
    * the engine, and apply the returned notification actions. Returns a disposer
    * that unsubscribes and closes live toasts.
@@ -144,13 +170,14 @@
           silent: action.silent === true,
         })
         toast.onclick = () => {
-          // P0 best effort only: the renderer cannot wake a tray-hidden window;
-          // ticket #6 adds the host click bridge.
+          // P0 best effort first (visible-window focus), then the host click bridge,
+          // which is the only path that can restore a tray-hidden window (#6).
           try {
             window.focus()
           } catch (error) {
             warn('focus on click failed', error)
           }
+          requestHostFocus()
         }
         notifications.set(action.tag, toast)
       } catch (error) {

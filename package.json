@@ -15,6 +15,7 @@
     "index.js",
     "client.js",
     "client.engine.js",
+    "focus.ps1",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg"
