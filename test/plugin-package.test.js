@@ -152,18 +152,36 @@ test('click bridge spawns the shipped focus helper with an Electron-cleaned envi
   assert.equal(call.options.env.SESSIONNAME, 'Console')
 })
 
-test('focus helper keeps its two-stage wake strategy and stays silent', () => {
+test('focus helper wakes the window through the app and keeps its fallbacks silent', () => {
   const helper = read('focus.ps1')
 
-  // Stage 1: direct Win32 wake, the only path that works from the sandboxed host.
-  assert.match(helper, /WM_SYSCOMMAND/, 'the helper restores the window through taskbar-class messages')
+  // Primary path: run Electron's own tray-click handler so the app calls
+  // focusPrimaryWindow() (external Win32 show leaves Chromium's renderer frozen).
+  assert.match(helper, /Electron_NotifyIconHostWindow/, 'the helper finds Electron notify-icon host window')
+  assert.match(helper, /TRAY_CLICK_MESSAGE = 0x8001/, 'the callback message is WM_APP+1 as in Electron 44')
+  assert.match(helper, /TRAY_ICON_ID = 2/, 'Electron kBaseIconId is 2')
+  assert.match(helper, /WM_LBUTTONDOWN/, 'Electron dispatches tray clicks on WM_LBUTTONDOWN')
+  assert.ok(
+    helper.indexOf('[DshNoticeFocus]::TryTrayClick()') < helper.indexOf('[DshNoticeFocus]::Reveal()'),
+    'the native tray path is attempted before the raw Win32 fallback',
+  )
+
+  // Fallback 1: raw Win32 wake/focus.
+  assert.match(helper, /WM_SYSCOMMAND/, 'the helper can restore the window through taskbar-class messages')
   assert.match(helper, /SC_RESTORE/, 'a tray-hidden or minimized window is woken with SC_RESTORE')
   assert.match(helper, /SetForegroundWindow/, 'the helper then brings the window to the foreground')
-  // Stage 2: the #3 baseline protocol path, as a fallback only.
-  assert.match(helper, /Start-Process 'dsh:\/\/open'/, 'the dsh:// protocol remains the fallback path')
-  assert.match(helper, /RevealFocusFailed/, 'the protocol fallback is gated on "window found but could not be raised"')
+  // Regression: a just-hidden window can still be GetForegroundWindow(), so "focused"
+  // must require the window to be on screen too, otherwise clicks become no-ops.
+  assert.match(helper, /alreadyThere && GetForegroundWindow\(\) == h/, 'focus is only assumed for a shown window')
+  assert.match(helper, /OnScreen\(h\) && GetForegroundWindow\(\) == h/, 'FocusedNow uses the same on-screen guard')
+  assert.match(helper, /ShowWindow\(h, SW_RESTORE\)/, 'a posted SC_RESTORE that is ignored falls back to ShowWindow')
   assert.match(helper, /AttachThreadInput/, 'the helper has a foreground-lock workaround for the background case')
+
+  // Fallback 2: the #3 baseline protocol path, only when the window exists but could not be raised.
+  assert.match(helper, /Start-Process 'dsh:\/\/open'/, 'the dsh:// protocol remains the last-resort path')
+  assert.match(helper, /if \(\$state -eq 2\)/, 'the protocol fallback is gated on "window found but could not be raised"')
   assert.match(helper, /Chrome_WidgetWin_1/, 'the window is located by Chromium class + product title')
+
   // Side-channel rule: a helper failure must never raise into DSH.
   assert.match(helper, /\$ErrorActionPreference = 'SilentlyContinue'/)
   // Windows PowerShell 5.1 decodes BOM-less script files as ANSI; non-ASCII text in
