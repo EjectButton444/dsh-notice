@@ -12,6 +12,10 @@
 
 GitHub issues 只作**公开路线图**：不在 issue 里贴实施报告，完成时关闭并指向本地记录。
 
+### Dev environment
+
+真机环境事实、插件安装现状、HMR 开发环、验证工具链与平台陷阱：[docs/dev-loop.md](docs/dev-loop.md)。实现/验收前先读。
+
 ### Triage labels
 
 仅用于 GitHub 路线图 issue；本地工单用 `Status:` 行。角色→标签映射见 [docs/agents/triage-labels.md](docs/agents/triage-labels.md)。

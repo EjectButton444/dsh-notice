@@ -33,6 +33,7 @@
 - 规格与设计：[docs/spec.md](docs/spec.md)、[docs/design-notes.md](docs/design-notes.md)
 - 工单与验证结论：[docs/tickets/](docs/tickets/)、[docs/spikes/](docs/spikes/)
 - 风险与决策：[docs/risks.md](docs/risks.md)、[docs/adr/](docs/adr/)
+- 本机开发环：[docs/dev-loop.md](docs/dev-loop.md)
 
 ## 许可
 
