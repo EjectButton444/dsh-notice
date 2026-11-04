@@ -1,10 +1,17 @@
 /**
  * dsh-notice decision engine — the only automated seam in v1.
  *
- * Pure functions only: it normalizes one attention observation into an attention
- * event, then decides whether that event becomes a system notification. It must
- * never import the DSH runtime and never touch `Notification` (docs/spec.md
- * "通知决策引擎（唯一自动化测试 seam）").
+ * Pure reducer over notification state: it normalizes one observation into an
+ * attention event (or a resolution / view event), advances serializable state and
+ * returns notification actions (`show` / `replace` / `close`). It must never import
+ * the DSH runtime and never touch `Notification` (docs/spec.md "通知决策引擎（唯一
+ * 自动化测试 seam）").
+ *
+ * Rules owned here (ticket #5): event mapping + wording (zh/en), per-session
+ * foreground suppression, `condition` / `events` / `mute` / `sound` config, one
+ * notification per session with in-place replacement, the 3s same-kind merge
+ * window, "另有 N 项", close-on-resolve, close-completion-on-view, subagent
+ * attribution, title fallback, tag.
  *
  * How it loads:
  *   - In the renderer it is a package-local client chunk served next to client.js
@@ -12,11 +19,6 @@
  *     the bottom of this file is the module-table contract.
  *   - test/client-engine.test.js executes it in a vm with a fake
  *     `window.__ModuleLoader__` and takes the factory exports.
- *
- * Notification rules that live here in v1 live here only: event -> wording,
- * per-session foreground suppression, title fallback, tag, silent. Merging,
- * close-on-resolve, "N more pending", config keys and subagent rules are added by
- * ticket #5 on top of the same seam.
  *
  * The whole file is one IIFE because HMR re-executes client scripts: a top-level
  * `const` would throw "already declared" on the second execution.
@@ -42,23 +44,14 @@
     question: EVENT_QUESTION,
   })
 
-  /**
-   * Classify one `pendingInteraction.kind` value from DSH state.
-   * @param {string | undefined | null} kind
-   * @returns {'approval' | 'question' | undefined} undefined for pending kinds that are not attention events
-   */
-  function classifyPending(kind) {
-    if (typeof kind !== 'string') return undefined
-    return PENDING_KIND_MAP[kind]
-  }
-
   const UNTITLED = Object.freeze({ zh: '未命名会话', en: 'Untitled session' })
   const FALLBACK_LOCALE = 'en'
+  /** Same-kind events closer than this belong to the wave already on screen (docs/design-notes.md §3.4). */
+  const WINDOW_MS = 3000
+  /** State key of the turn-completion item inside one session (pending items are keyed by source session id). */
+  const COMPLETION_ITEM = '__turnComplete__'
 
-  /**
-   * Defaults from docs/spec.md ("配置"). Ticket #4 only carries the shape forward;
-   * ticket #5 wires the profile config into the adapter and implements the rules.
-   */
+  /** Defaults from docs/spec.md ("配置"); the profile override replaces them wholesale. */
   const DEFAULT_CONFIG = Object.freeze({
     events: Object.freeze({ approval: true, question: true, turnComplete: true }),
     condition: 'unfocused',
@@ -66,12 +59,35 @@
     mute: false,
   })
 
+  /** Classify one `pendingInteraction.kind` value from DSH state. */
+  function classifyPending(kind) {
+    if (typeof kind !== 'string') return undefined
+    return PENDING_KIND_MAP[kind]
+  }
+
   /** Map any DSH locale identifier onto one of the two shipped dictionaries. */
   function localeOf(value) {
     if (typeof value !== 'string') return FALLBACK_LOCALE
     const tag = value.trim().toLowerCase()
     if (tag === 'zh' || tag.startsWith('zh-') || tag.startsWith('zh_')) return 'zh'
     return 'en'
+  }
+
+  /** Normalize the profile config into the documented shape, filling defaults. */
+  function normalizeConfig(raw) {
+    const input = raw !== null && typeof raw === 'object' ? raw : {}
+    const events = input.events !== null && typeof input.events === 'object' ? input.events : {}
+    const defaults = DEFAULT_CONFIG
+    return {
+      events: {
+        approval: events.approval === undefined ? defaults.events.approval : events.approval !== false,
+        question: events.question === undefined ? defaults.events.question : events.question !== false,
+        turnComplete: events.turnComplete === undefined ? defaults.events.turnComplete : events.turnComplete !== false,
+      },
+      condition: input.condition === 'always' ? 'always' : defaults.condition,
+      sound: input.sound === undefined ? defaults.sound : input.sound !== false,
+      mute: input.mute === undefined ? defaults.mute : input.mute === true,
+    }
   }
 
   /** Session title, falling back to "unnamed session" plus the workspace when DSH has no title. */
@@ -86,7 +102,7 @@
 
   /**
    * Normalize one observation into an attention event, or null when the
-   * observation cannot be attributed (the adapter drops those).
+   * observation cannot be attributed.
    *
    * @param {{
    *   sessionId: string,
@@ -124,16 +140,15 @@
     }
   }
 
-  /** Event identity used for the notification tag and for per-session suppression. */
+  /** Session identity used for the notification tag and for per-session suppression. */
   function eventSessionId(event) {
     return event.mainSessionId !== undefined ? event.mainSessionId : event.sessionId
   }
 
   /**
    * Foreground suppression (docs/design-notes.md §3.2): only the session the human
-   * is actually looking at is silent. Focusing DSH while another session is on
-   * screen still notifies. A subagent event is suppressed when either the
-   * subagent's own view or its main session is the main view.
+   * is actually looking at is silent. A subagent event is suppressed when either
+   * the subagent's own view or its main session is the main view.
    */
   function isSuppressed(event, runtime) {
     if (runtime.focused !== true) return false
@@ -143,58 +158,182 @@
     return event.mainSessionId !== undefined && viewed === event.mainSessionId
   }
 
-  /**
-   * Decide the notification actions for one already-normalized attention event.
-   * This is the function the DSH adapter calls after `normalizeEvent`.
-   *
-   * @param {object | null} event normalized attention event
-   * @param {{ runtime?: { focused?: boolean, viewedSessionId?: string },
-   *   config?: typeof DEFAULT_CONFIG }} input
-   * @returns {Array<{kind: 'show', event: string, title: string, body: string,
-   *   tag: string, silent: boolean}>} no action for suppressed events
-   */
-  function decideEvent(event, input) {
-    if (event === null || typeof event !== 'object' || !EVENT_KINDS.includes(event.kind)) return []
-    const settings = input !== null && typeof input === 'object' ? input : {}
-    const config = settings.config !== null && typeof settings.config === 'object' ? settings.config : DEFAULT_CONFIG
-    const runtime = settings.runtime !== null && typeof settings.runtime === 'object' ? settings.runtime : {}
-    if (isSuppressed(event, runtime)) return []
+  /** Fresh, serializable notification state. */
+  function emptyState() {
+    return { sessions: {} }
+  }
 
-    return [
-      {
-        kind: 'show',
-        event: event.kind,
-        title: event.title,
-        body: MESSAGES[event.kind][event.locale],
-        tag: eventSessionId(event),
-        silent: config.sound === false,
-      },
-    ]
+  function unchanged(state) {
+    return { state, actions: [] }
+  }
+
+  /** Item of the session whose event is the most recent — the notification headline. */
+  function latestItem(items) {
+    let headline
+    for (const item of Object.values(items)) {
+      if (headline === undefined || item.at >= headline.at) headline = item
+    }
+    return headline
+  }
+
+  /** Unresolved pending interactions of one session ("另有 N 项" counts these, not the completion sentinel). */
+  function pendingCount(items) {
+    return Object.keys(items).filter((key) => key !== COMPLETION_ITEM).length
+  }
+
+  /** Body text: headline wording + subagent origin + pending count. */
+  function composeBody(session) {
+    const headline = latestItem(session.items)
+    const locale = session.locale
+    const base = MESSAGES[headline.kind][locale]
+    const parts = []
+    if (headline.isSubagent) parts.push(locale === 'zh' ? '来自子代理' : 'from subagent')
+    // Only other *pending* items count: a completion reminder next to a pending
+    // item is not a second "待处理项" (docs/spec.md "另有 N 项").
+    const others = pendingCount(session.items) - (headline.kind === EVENT_TURN_COMPLETE ? 0 : 1)
+    if (headline.kind !== EVENT_TURN_COMPLETE && others > 0) {
+      parts.push(locale === 'zh' ? `另有 ${others} 项` : `+${others} more pending`)
+    }
+    if (parts.length === 0) return base
+    return locale === 'zh' ? `${base}（${parts.join('，')}）` : `${base} (${parts.join(', ')})`
+  }
+
+  function actionFor(session, tag, kind) {
+    const headline = latestItem(session.items)
+    return {
+      kind,
+      event: headline.kind,
+      title: session.title,
+      body: composeBody(session),
+      tag,
+      silent: session.silent === true,
+    }
+  }
+
+  /** Fresh per-session notification state (kept JSON-serializable: `lastAt` is -1 until the first event). */
+  function newSession() {
+    return { title: '', locale: FALLBACK_LOCALE, silent: false, items: {}, lastKind: undefined, lastAt: -1, notified: false, notificationBody: undefined }
+  }
+
+  /** One attention event -> one notification action; updates the session state. */
+  function applyAttention(state, rawEvent, runtime, config, now) {
+    const event = normalizeEvent(rawEvent)
+    if (event === null) return unchanged(state)
+    // Subagent turns never remind (spec user story 20): their work is merged into
+    // the main session, whose completion is the one worth interrupting for.
+    if (event.isSubagent && event.kind === EVENT_TURN_COMPLETE) return unchanged(state)
+    if (!config.events[event.kind]) return unchanged(state)
+    if (config.mute) return unchanged(state)
+    // Suppressed events are not tracked either: the human already sees them in DSH.
+    if (config.condition !== 'always' && isSuppressed(event, runtime)) return unchanged(state)
+
+    const target = eventSessionId(event)
+    const sessions = { ...state.sessions }
+    const previous = sessions[target]
+    const session = previous !== undefined ? { ...previous, items: { ...previous.items } } : newSession()
+    session.title = event.title
+    session.locale = event.locale
+    session.silent = config.sound === false
+
+    const itemKey = event.kind === EVENT_TURN_COMPLETE ? COMPLETION_ITEM : event.sessionId
+    // Same kind inside the rolling window = the wave already on screen; no re-alert.
+    const withinWave = session.notified && session.lastKind === event.kind && now - session.lastAt < WINDOW_MS
+
+    session.items[itemKey] = { kind: event.kind, isSubagent: event.isSubagent, at: now }
+    session.lastKind = event.kind
+    session.lastAt = now
+
+    if (withinWave && composeBody(session) === session.notificationBody) {
+      // Same wave and the visible content did not change: one reminder, no re-alert.
+      sessions[target] = session
+      return { state: { sessions }, actions: [] }
+    }
+
+    // A changed wave (e.g. a second pending item joined) must not re-banner, but it
+    // does have to show the new count; the engine still reports one notification.
+    const actionKind = session.notified ? 'replace' : 'show'
+    const action = actionFor(session, target, actionKind)
+    session.notified = true
+    session.notificationBody = action.body
+    sessions[target] = session
+    return { state: { sessions }, actions: [action] }
+  }
+
+  /** Drop one item from a session; close when nothing is left, otherwise re-render. */
+  function dropItem(state, mainSessionId, itemKey) {
+    const previous = state.sessions[mainSessionId]
+    if (previous === undefined || previous.items[itemKey] === undefined) return unchanged(state)
+
+    const items = { ...previous.items }
+    delete items[itemKey]
+    const sessions = { ...state.sessions }
+    if (Object.keys(items).length === 0) {
+      delete sessions[mainSessionId]
+      return { state: { sessions }, actions: previous.notified ? [{ kind: 'close', tag: mainSessionId }] : [] }
+    }
+
+    const session = { ...previous, items }
+    sessions[mainSessionId] = session
+    if (!session.notified) return { state: { sessions }, actions: [] }
+    const action = actionFor(session, mainSessionId, 'replace')
+    session.notificationBody = action.body
+    return { state: { sessions }, actions: [action] }
+  }
+
+  /** A pending interaction disappeared (approval answered / question answered). */
+  function applyPendingResolved(state, observation) {
+    const sessionId = typeof observation.sessionId === 'string' ? observation.sessionId : undefined
+    if (sessionId === undefined) return unchanged(state)
+    const mainSessionId = typeof observation.mainSessionId === 'string' && observation.mainSessionId !== '' ? observation.mainSessionId : sessionId
+    return dropItem(state, mainSessionId, sessionId)
+  }
+
+  /** The session was opened / its completion was seen: drop the completion reminder. */
+  function applyViewed(state, observation) {
+    const sessionId = typeof observation.sessionId === 'string' ? observation.sessionId : undefined
+    if (sessionId === undefined) return unchanged(state)
+    return dropItem(state, sessionId, COMPLETION_ITEM)
   }
 
   /**
-   * Decide the notification actions for one observation (normalize + decide).
+   * Advance notification state by one observation.
    *
-   * @param {{
-   *   event: object,
-   *   runtime?: { focused?: boolean, viewedSessionId?: string },
-   *   config?: typeof DEFAULT_CONFIG,
-   * }} input
-   * @returns {Array<{kind: 'show', event: string, title: string, body: string,
-   *   tag: string, silent: boolean}>} no action for suppressed or unattributable events
+   * @param {{ sessions: object }} state previously returned state (or `emptyState()`)
+   * @param {{type: 'attention', event: object} | {type: 'pendingResolved', sessionId: string, mainSessionId?: string}
+   *   | {type: 'viewed', sessionId: string}} observation
+   * @param {{ focused?: boolean, viewedSessionId?: string }} [runtime]
+   * @param {object} [config] profile config (raw or normalized)
+   * @param {number} [now] milliseconds timestamp used for the 3s merge window
+   * @returns {{state: {sessions: object}, actions: Array<{kind: 'show'|'replace'|'close',
+   *   tag: string, event?: string, title?: string, body?: string, silent?: boolean}>}}
    */
-  function decide(input) {
-    if (input === null || typeof input !== 'object') return []
-    return decideEvent(normalizeEvent(input.event), input)
+  function reduce(state, observation, runtime, config, now) {
+    const settings = normalizeConfig(config)
+    const safeState = state !== null && typeof state === 'object' && state.sessions !== null && typeof state.sessions === 'object' ? state : emptyState()
+    const safeRuntime = runtime !== null && typeof runtime === 'object' ? runtime : {}
+    const at = typeof now === 'number' ? now : 0
+    if (observation === null || typeof observation !== 'object') return unchanged(safeState)
+    switch (observation.type) {
+      case 'attention':
+        return applyAttention(safeState, observation.event, safeRuntime, settings, at)
+      case 'pendingResolved':
+        return applyPendingResolved(safeState, observation)
+      case 'viewed':
+        return applyViewed(safeState, observation)
+      default:
+        return unchanged(safeState)
+    }
   }
 
   const exports = Object.freeze({
     EVENT_KINDS,
     DEFAULT_CONFIG,
+    WINDOW_MS,
     classifyPending,
+    normalizeConfig,
     normalizeEvent,
-    decideEvent,
-    decide,
+    emptyState,
+    reduce,
   })
 
   // Package-local client chunk registration: dsh-client-modules serves this file

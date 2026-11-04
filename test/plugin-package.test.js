@@ -71,14 +71,70 @@ test('bundle patch inserts exactly one loader row named after the package', () =
   assert.deepEqual(names, ['dsh-notice'])
 })
 
-test('host half is a no-op Cordis plugin', async () => {
+test('host half serves the profile config through one read-only web route', async () => {
   const host = await import('../index.js')
 
+  assert.equal(host.name, 'dsh-notice')
+  assert.deepEqual(host.inject, ['webServer'], 'the host half needs the web-server route registry')
   assert.equal(typeof host.apply, 'function')
-  assert.doesNotThrow(() => host.apply())
+
+  const routes = []
+  const ctx = {
+    effect(callback) {
+      const dispose = callback()
+      assert.equal(typeof dispose, 'function', 'the route registration must be disposable')
+      return dispose
+    },
+    webServer: {
+      register(route) {
+        routes.push(route)
+        return () => {}
+      },
+    },
+  }
+  const settings = {
+    events: { approval: false, question: true, turnComplete: true },
+    condition: 'always',
+    sound: false,
+    mute: false,
+  }
+  host.apply(ctx, settings)
+
+  assert.equal(routes.length, 1, 'exactly one route is mounted')
+  const [route] = routes
+  assert.equal(route.kind, 'exact')
+  assert.equal(route.path, '/dsh-notice/config')
+
+  const response = fakeResponse()
+  route.handler({ method: 'GET' }, response)
+  assert.equal(response.statusCode, 200)
+  assert.deepEqual(JSON.parse(response.body), settings, 'the browser half receives the effective profile config')
+  assert.equal(response.headers['cache-control'], 'no-store')
+
+  const rejected = fakeResponse()
+  route.handler({ method: 'POST' }, rejected)
+  assert.equal(rejected.statusCode, 405, 'the config route is read-only')
+
 })
 
-test('client half follows the module loader contract and injects the DSH services it observes', async () => {
+/** Minimal Node response double for the host route handler. */
+function fakeResponse() {
+  return {
+    statusCode: undefined,
+    headers: undefined,
+    body: undefined,
+    writeHead(statusCode, headers) {
+      this.statusCode = statusCode
+      this.headers = headers
+    },
+    end(body) {
+      this.body = body
+    },
+    destroy() {},
+  }
+}
+
+test('client half follows the module loader contract, fetches the profile config and injects its DSH services', async () => {
   let registration
   const window = {
     __ModuleLoader__: {
@@ -87,17 +143,31 @@ test('client half follows the module loader contract and injects the DSH service
       },
     },
   }
-  vm.runInContext(read('client.js'), vm.createContext({ window }), { filename: 'client.js' })
+  const configFetches = []
+  const sandbox = {
+    window,
+    fetch: async (path, options) => {
+      configFetches.push({ path, method: options !== undefined ? options.method : undefined })
+      return { ok: true, json: async () => ({ mute: true }) }
+    },
+  }
+  vm.runInContext(read('client.js'), vm.createContext(sandbox), { filename: 'client.js' })
 
   assert.equal(registration?.id, manifest().name, 'factory id must equal the package name')
 
   const requestedChunks = []
+  const normalizedConfigs = []
   const fakeEngine = {
     EVENT_KINDS: [],
     DEFAULT_CONFIG: {},
+    normalizeConfig(raw) {
+      normalizedConfigs.push(raw)
+      return { events: {}, condition: 'unfocused', sound: true, mute: false }
+    },
     classifyPending: () => undefined,
     normalizeEvent: () => null,
-    decideEvent: () => [],
+    emptyState: () => ({ sessions: {} }),
+    reduce: () => ({ state: { sessions: {} }, actions: [] }),
   }
   const plugin = registration.factory({
     async async(specifier) {
@@ -122,4 +192,8 @@ test('client half follows the module loader contract and injects the DSH service
   await new Promise((resolve) => setImmediate(resolve))
 
   assert.deepEqual(requestedChunks, ['./client.engine.js'], 'the pure engine travels as a package-local chunk')
+  assert.equal(configFetches.length, 1, 'the profile config is fetched once per client load')
+  assert.equal(configFetches[0].path, 'dsh-notice/config', 'document-relative, served by the host half')
+  assert.equal(configFetches[0].method, 'GET')
+  assert.deepEqual(normalizedConfigs[normalizedConfigs.length - 1], { mute: true }, 'the raw route payload goes through engine normalization')
 })

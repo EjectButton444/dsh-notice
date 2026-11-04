@@ -70,13 +70,13 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
 
 ## 配置
 
-- 配置位于 DSH profile 的 `cordis.patch.yml` 中本插件的 loader 行 `config`，由插件自带的 schemastery `Config` 校验。
+- 配置位于 DSH profile 的 `cordis.patch.yml` 中本插件的 loader 行 `config`。**实现注记（2026-11-04，#5）**：原计划由插件自带的 schemastery `Config` 校验，但第三方宿主 bundle 运行期无法解析 DSH 内部共享包 `@deepseek-ai/schemastery`（实测 `ERR_MODULE_NOT_FOUND`），v1 改为宿主半身按只读路由 `GET /dsh-notice/config` 暴露配置、由纯决策引擎 `normalizeConfig` 校验并补默认值（单测覆盖）；见 [spikes/05](spikes/05-notification-rules.md)。行 id 以重组合后的 `notice` 为准。
 - 配置键：
   - `events.approval` / `events.question` / `events.turnComplete`：布尔，默认全部 true；
   - `condition`：`unfocused`（默认）或 `always`；
   - `sound`：布尔，默认 true；
   - `mute`：布尔，默认 false。
-- 覆盖语义为**整体替换**（不深合并），修改后需重启 DSH 生效。
+- 覆盖语义为**整体替换**（不深合并），修改后需重启 DSH 生效（开发环 HMR 里 profile patch 保存即可活重组合，再重载客户端半身）。
 - v1 不做设置界面；纯宿主半身只有「禁用整行」开关可用，这与「配置走文件」的决策一致（对齐 Codex 的 `notify` 机器本地配置思路）。
 
 ## 注意力事件来源
@@ -96,9 +96,11 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
 ## 通知决策引擎（唯一自动化测试 seam）
 
 - 纯函数/纯 reducer，不 import DSH 运行时、不接触 `Notification`：
-  - 输入：归一化事件（会话 id、事件类型、主会话 id、是否子代理、待处理数量）+ 配置 + 运行态（窗口是否聚焦、当前主视图会话 id）；
-  - 输出：通知动作列表（`show` / `replace` / `close`），每条含 `title`、`body`、`tag`（= 会话 id）、`silent`。
-- 规则全部住在引擎里：事件映射、按会话的前台抑制、`condition` 覆盖、静音、每会话单条合并、3 秒同类合并窗口、「另有 N 项」计数、处理完消解、子代理归并、语言选择、标题兜底。
+  - 输入：持久化状态 + 单条观测 + 配置 + 运行态（窗口是否聚焦、当前主视图会话 id）；
+  - 观测（normalize 侧）：`attention`（归一化后的注意力事件：会话 id、事件类型、主会话 id、是否子代理、标题、语言）、`pendingResolved`（待处理交互消失）、`viewed`（会话被打开 / 完成被看到）；
+  - 输出：`{ state, actions }`，动作列表为 `show` / `replace` / `close`，`show`/`replace` 每条含 `title`、`body`、`tag`（= 会话 id）、`silent`。
+- 规则全部住在引擎里：事件映射与 zh/en 文案、按会话的前台抑制、`condition` 覆盖、`events` 开关、静音、每会话单条合并与原地替换、3 秒同类合并窗口、「另有 N 项」计数、处理完消解、打开会话关闭完成提醒、子代理归并、标题兜底。
+- 实现注记（#5）：第三方宿主 bundle 运行期无法解析 `@deepseek-ai/schemastery`，配置校验/默认值由本引擎承担（见「配置」的注记与 [spikes/05](spikes/05-notification-rules.md)）。
 
 ## 通知行为
 
@@ -116,7 +118,7 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
 
 # Testing Decisions
 
-- **只有一个自动化 seam：通知决策管线（normalize → decide）。** 它是纯函数，外部行为可观察（输入状态/配置/焦点 → 输出通知动作），不依赖 DSH 运行时与 Windows。
+- **只有一个自动化 seam：通知决策管线（normalize → reduce）。** 它是纯 reducer，外部行为可观察（输入状态/观测/配置/焦点 → 输出新状态与通知动作），不依赖 DSH 运行时与 Windows。
 - 测试框架用 `node --test`，表驱动用例，覆盖：
   - 三类事件 → 对应通知动作与文案；
   - 前台抑制：窗口聚焦 + 同一会话 / 窗口聚焦 + 不同会话 / 窗口未聚焦；

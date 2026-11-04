@@ -3,17 +3,18 @@
  *
  * Attention sources (docs/design-notes.md §2), all observed, never hijacked:
  *   - `uiSession.sessionStatus` — `pendingInteraction.kind` for authorization and
- *     question requests, and the `running: true -> false` edge used as the P0
- *     turn-completion approximation;
+ *     question requests, the `running: true -> false` edge used as the P0
+ *     turn-completion approximation, and `completionUnread` for "completion seen";
  *   - `sessions.list` — `displayTitle` / `cwd` for the toast, `parentId` / `origin`
  *     for subagent attribution, `retainedBy.mainView` for per-session foreground
  *     suppression.
  *
- * The pure decision pipeline lives in ./client.engine.js and is loaded as a
- * package-local client chunk (`require.async`). This file only feeds DSH state in
- * and Web Notifications out: no notification rules live here. It is a read-only
- * side channel: every callback is wrapped so an exception can never disturb DSH
- * (ADR-0002).
+ * The pure reducer lives in ./client.engine.js (package-local client chunk). This
+ * file only turns DSH state changes into engine observations (attention /
+ * pendingResolved / viewed), applies the returned actions to Web Notifications, and
+ * fetches the profile config from the host half (`GET /dsh-notice/config`). It is a
+ * read-only side channel: every callback is wrapped so an exception can never
+ * disturb DSH (ADR-0002).
  *
  * Everything stays inside one IIFE: HMR re-executes client scripts, so a
  * top-level `const`/`let` would throw "already declared" on the second execution
@@ -23,7 +24,21 @@
   'use strict'
 
   const ENGINE_CHUNK = './client.engine.js'
+  /** Document-relative route served by the host half (index.js). */
+  const CONFIG_PATH = 'dsh-notice/config'
   const LOG_PREFIX = '[dsh-notice]'
+  /** A hung config fetch must not leave notifications silently disabled forever. */
+  const CONFIG_TIMEOUT_MS = 3000
+  /**
+   * Electron/Windows quirk (measured during #5 acceptance): creating a toast while
+   * another toast with the same `tag` still exists makes the platform deliver
+   * `close` to the new object immediately, and its later `close()` becomes a
+   * no-op, which leaks entries into the notification center. The adapter therefore
+   * uses engine tags as the *state key* and a unique renderer toast tag per wave
+   * (`<tag>#<n>`), closing the previous toast explicitly when a session's
+   * notification must be replaced or resolved.
+   */
+  let toastSequence = 0
 
   window.__ModuleLoader__.load({
     id: 'dsh-notice',
@@ -37,9 +52,10 @@
             let cancelled = false
 
             loadEngine(require)
-              .then((engine) => {
+              .then((engine) => loadConfig(engine).then((config) => ({ engine, config })))
+              .then(({ engine, config }) => {
                 if (cancelled) return
-                dispose = watchAttention(ctx, engine)
+                dispose = watchAttention(ctx, engine, config)
               })
               .catch((error) => warn('decision engine unavailable; notifications are off', error))
 
@@ -66,52 +82,66 @@
     return require.async(ENGINE_CHUNK)
   }
 
+  /** Fetch the host-served profile config; defaults when it is unreachable. */
+  function loadConfig(engine) {
+    const fallback = engine.normalizeConfig(undefined)
+    try {
+      if (typeof fetch !== 'function') return Promise.resolve(fallback)
+      const request = fetch(CONFIG_PATH, { method: 'GET', headers: { accept: 'application/json' }, cache: 'no-store' })
+        .then((response) => (response !== undefined && response.ok === true ? response.json() : undefined))
+        .then((raw) => engine.normalizeConfig(raw))
+        .catch((error) => {
+          warn('config fetch failed; using defaults', error)
+          return fallback
+        })
+      return withTimeout(request, CONFIG_TIMEOUT_MS, fallback)
+    } catch (error) {
+      warn('config fetch failed; using defaults', error)
+      return Promise.resolve(fallback)
+    }
+  }
+
+  /** Resolve with `fallback` if `promise` does not settle within `ms` (cold-start safety). */
+  function withTimeout(promise, ms, fallback) {
+    let timer
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallback), ms)
+    })
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+  }
+
   /**
-   * Subscribe to the attention sources and turn observed transitions into
-   * notifications. Returns a disposer that unsubscribes and closes live toasts.
+   * Subscribe to the attention sources, translate transitions into observations for
+   * the engine, and apply the returned notification actions. Returns a disposer
+   * that unsubscribes and closes live toasts.
    */
-  function watchAttention(ctx, engine) {
+  function watchAttention(ctx, engine, config) {
+    const sessionStatus = ctx.uiSession.sessionStatus
+    const sessions = ctx.sessions
+    let state = engine.emptyState()
+    const notifications = new Map()
     const previousRunning = new Map()
     const previousPending = new Map()
-    const notifications = new Map()
+    const previousCompletionUnread = new Map()
+    /** source session id -> notification target (main session id) while a pending item is tracked. */
+    const pendingTargets = new Map()
+    let previousViewedSessionId
+    let previousFocused = false
     let primed = false
 
-    /** Normalized observation -> engine decision -> Web Notification. */
-    function notifyAttention(sessionId, kind, row, rows, runtime) {
-      try {
-        const subagent = isSubagentSession(row)
-        const mainSessionId = subagent ? mainSessionIdOf(sessionId, rows) : undefined
-        const labelRow = mainSessionId !== undefined ? rows[mainSessionId] : row
-
-        const event = engine.normalizeEvent({
-          sessionId,
-          kind,
-          isSubagent: subagent,
-          mainSessionId,
-          title: labelRow !== undefined && labelRow !== null ? labelRow.displayTitle : undefined,
-          workspace: workspaceOf(labelRow !== undefined && labelRow !== null ? labelRow.cwd : undefined),
-          locale: currentLocale(ctx),
-        })
-        if (event === null) return
-
-        for (const action of engine.decideEvent(event, { runtime, config: engine.DEFAULT_CONFIG })) {
-          if (action !== null && action.kind === 'show') showToast(action)
-        }
-      } catch (error) {
-        warn('notification decision failed', error)
-      }
+    function canNotify() {
+      if (typeof Notification === 'undefined' || Notification === undefined) return false
+      return Notification.permission !== 'denied'
     }
 
-    /** Send one Web Notification; `tag = main session id` is what de-duplicates per session. */
-    function showToast(action) {
+    function createToast(action) {
       try {
-        if (typeof Notification === 'undefined' || Notification === undefined) return
-        if (Notification.permission === 'denied') return
-
+        if (!canNotify()) return
+        toastSequence += 1
         const toast = new Notification(action.title, {
           body: action.body,
-          tag: action.tag,
-          silent: action.silent,
+          tag: `${action.tag}#${toastSequence}`,
+          silent: action.silent === true,
         })
         toast.onclick = () => {
           // P0 best effort only: the renderer cannot wake a tray-hidden window;
@@ -122,63 +152,143 @@
             warn('focus on click failed', error)
           }
         }
-        toast.onclose = () => {
-          if (notifications.get(action.tag) === toast) notifications.delete(action.tag)
-        }
         notifications.set(action.tag, toast)
       } catch (error) {
         warn('toast send failed', error)
       }
     }
 
+    /** Show a toast; replacing the session's current one closes it first. */
+    function showToast(action) {
+      try {
+        if (!canNotify()) return
+        if (notifications.has(action.tag)) closeToast(action.tag)
+        createToast(action)
+      } catch (error) {
+        warn('toast send failed', error)
+      }
+    }
+
+    function closeToast(tag) {
+      try {
+        const toast = notifications.get(tag)
+        if (toast === undefined) return
+        notifications.delete(tag)
+        toast.close?.()
+      } catch (error) {
+        warn('toast close failed', error)
+      }
+    }
+
+    function dispatch(action) {
+      try {
+        if (action === null || typeof action !== 'object') return
+        if (action.kind === 'show' || action.kind === 'replace') showToast(action)
+        else if (action.kind === 'close') closeToast(action.tag)
+      } catch (error) {
+        warn('notification action failed', error)
+      }
+    }
+
+    function observe(observation, rows) {
+      const result = engine.reduce(state, observation, readRuntime(rows), config, Date.now())
+      state = result.state
+      for (const action of result.actions) dispatch(action)
+    }
+
     function reconcile() {
       try {
-        const statuses = ctx.uiSession.sessionStatus.getSnapshot()
+        const statuses = sessionStatus.getSnapshot()
         const rows = sessionRows(ctx)
-        const runtime = readRuntime(rows)
+        const locale = currentLocale(ctx)
+        const viewedSessionId = mainViewSessionId(rows)
+        const focused = windowHasFocus()
 
         for (const [sessionId, status] of statuses) {
           const row = rows[sessionId]
 
           // Pending interaction appears or changes kind -> authorization / question request.
-          const pendingKind = engine.classifyPending(status.pendingInteraction !== undefined && status.pendingInteraction !== null ? status.pendingInteraction.kind : undefined)
-          if (previousPending.get(sessionId) !== pendingKind) {
-            previousPending.set(sessionId, pendingKind)
-            if (primed && pendingKind !== undefined) notifyAttention(sessionId, pendingKind, row, rows, runtime)
+          const pendingKind =
+            status.pendingInteraction !== undefined && status.pendingInteraction !== null
+              ? engine.classifyPending(status.pendingInteraction.kind)
+              : undefined
+          const previousKind = previousPending.get(sessionId)
+          previousPending.set(sessionId, pendingKind)
+          if (primed && pendingKind !== undefined && pendingKind !== previousKind) {
+            const attribution = attribute(ctx, sessionId, row, rows, locale)
+            pendingTargets.set(sessionId, attribution.mainSessionId !== undefined ? attribution.mainSessionId : sessionId)
+            observe({ type: 'attention', event: { sessionId, kind: pendingKind, ...attribution } }, rows)
+          } else if (primed && pendingKind === undefined && previousKind !== undefined) {
+            const target = pendingTargets.get(sessionId)
+            pendingTargets.delete(sessionId)
+            const mainSessionId = target !== undefined ? target : mainSessionIdOrSelf(sessionId, row, rows)
+            observe({ type: 'pendingResolved', sessionId, mainSessionId }, rows)
           }
 
-          // `running` true -> false edge -> P0 turn completion (approximation: Stop
-          // and failures also end a turn this way; ticket #7 replaces this feed).
-          // Completion only for a session whose list row is present and main: an
-          // unknown row must not leak a subagent completion (spec: only main
-          // sessions notify on turn completion), and sessions.list keeps in sync
-          // with the status stream.
+          // `running` true -> false edge -> P0 turn completion (Stop/error also end a
+          // turn this way; ticket #7 replaces this feed with the host `turn/end` reason).
+          // The engine drops subagent completions; the adapter only skips sessions it
+          // has no list row for (attribution and title come from that row).
           const running = status.running === true
           const wasRunning = previousRunning.get(sessionId) === true
           previousRunning.set(sessionId, running)
-          const knownMainSession = row !== undefined && row !== null && !isSubagentSession(row)
-          if (primed && wasRunning && !running && knownMainSession) {
-            notifyAttention(sessionId, 'turnComplete', row, rows, runtime)
+          if (primed && wasRunning && !running && row !== undefined && row !== null) {
+            observe(
+              { type: 'attention', event: { sessionId, kind: 'turnComplete', ...attribute(ctx, sessionId, row, rows, locale) } },
+              rows,
+            )
+          }
+
+          // DSH clears completionUnread once the human has seen the finished session.
+          const unread = status.completionUnread === true
+          const wasUnread = previousCompletionUnread.get(sessionId) === true
+          previousCompletionUnread.set(sessionId, unread)
+          if (primed && wasUnread && !unread) observe({ type: 'viewed', sessionId }, rows)
+        }
+
+        if (primed) {
+          // Opening a session (or coming back to the window on it) means its completion was seen.
+          if (viewedSessionId !== undefined && viewedSessionId !== previousViewedSessionId) {
+            observe({ type: 'viewed', sessionId: viewedSessionId }, rows)
+          } else if (focused && !previousFocused && viewedSessionId !== undefined) {
+            observe({ type: 'viewed', sessionId: viewedSessionId }, rows)
           }
         }
+        previousViewedSessionId = viewedSessionId
+        previousFocused = focused
 
-        // Drop sessions that left the snapshot so a later reappearance cannot look
-        // like a `running` transition, and the maps stay bounded by live sessions.
-        for (const sessionId of previousRunning.keys()) {
-          if (!statuses.has(sessionId)) previousRunning.delete(sessionId)
-        }
+        // A pending item whose session disappeared from the snapshot can never be
+        // resolved by a later event; close it instead of leaking an orphan toast.
         for (const sessionId of previousPending.keys()) {
-          if (!statuses.has(sessionId)) previousPending.delete(sessionId)
+          if (statuses.has(sessionId)) continue
+          const previousKind = previousPending.get(sessionId)
+          const target = pendingTargets.get(sessionId)
+          pendingTargets.delete(sessionId)
+          if (previousKind !== undefined) observe({ type: 'pendingResolved', sessionId, mainSessionId: target !== undefined ? target : sessionId }, rows)
         }
-
+        prune(previousRunning, statuses)
+        prune(previousPending, statuses)
+        prune(previousCompletionUnread, statuses)
         primed = true
       } catch (error) {
         warn('attention reconcile failed', error)
       }
     }
 
-    const disposeStatus = ctx.uiSession.sessionStatus.subscribe(reconcile)
-    const disposeList = ctx.sessions.list.subscribe(reconcile)
+    const disposeStatus = sessionStatus.subscribe(reconcile)
+    const disposeList = sessions.list.subscribe(reconcile)
+    // Focus can change without any session status/list update; the `viewed` close
+    // rule needs the edge, so listen for it explicitly.
+    const onWindowFocus = () => reconcile()
+    let listeningForFocus = false
+    try {
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('focus', onWindowFocus)
+        listeningForFocus = true
+      }
+    } catch (error) {
+      warn('focus listener unavailable', error)
+    }
 
     // Prime the transition maps with the state that already exists at load time:
     // pre-existing pending interactions must not fire a toast just because the
@@ -196,6 +306,13 @@
       } catch (error) {
         warn('session list unsubscribe failed', error)
       }
+      if (listeningForFocus) {
+        try {
+          window.removeEventListener('focus', onWindowFocus)
+        } catch (error) {
+          warn('focus listener cleanup failed', error)
+        }
+      }
       for (const toast of notifications.values()) {
         try {
           toast.close?.()
@@ -204,6 +321,31 @@
         }
       }
       notifications.clear()
+    }
+  }
+
+  /** Identity + label inputs for one session (subagent work is attributed to its main session). */
+  function attribute(ctx, sessionId, row, rows, locale) {
+    const isSubagent = isSubagentSession(row)
+    const mainSessionId = isSubagent ? mainSessionIdOf(sessionId, rows) : undefined
+    const labelRow = mainSessionId !== undefined ? rows[mainSessionId] : row
+    return {
+      isSubagent,
+      mainSessionId,
+      title: labelRow !== undefined && labelRow !== null ? labelRow.displayTitle : undefined,
+      workspace: workspaceOf(labelRow !== undefined && labelRow !== null ? labelRow.cwd : undefined),
+      locale,
+    }
+  }
+
+  function mainSessionIdOrSelf(sessionId, row, rows) {
+    if (!isSubagentSession(row)) return sessionId
+    return mainSessionIdOf(sessionId, rows)
+  }
+
+  function prune(map, statuses) {
+    for (const sessionId of map.keys()) {
+      if (!statuses.has(sessionId)) map.delete(sessionId)
     }
   }
 

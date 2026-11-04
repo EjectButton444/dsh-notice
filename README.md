@@ -12,20 +12,37 @@
 
 ## 状态
 
-实现阶段：P0 客户端半身跑通（最小插件 + Windows Toast + 注意力检测 + 通知决策引擎），P1 待开始。
+实现阶段：P0 客户端半身完成（最小插件 + Windows Toast + 注意力检测 + 通知规则/配置引擎），P1 待开始。
 
 - [x] 需求与设计访谈
 - [x] 领域术语表、ADR-0001 / ADR-0002
 - [x] P0：纯客户端插件跑通 Windows Toast
 - [x] P0：客户端注意力检测（授权 / 提问 / 回合完成）+ 通知决策引擎（前台抑制，含单测）
-- [ ] P1：通知规则补全（合并 / 消解 / 配置 / i18n）
+- [x] P0：通知规则补全（每会话单条 / 替换 / 3s 合并 / 另有 N 项 / 消解关闭 / 配置 / zh-en 文案）
 - [ ] P1：宿主半身补「点击唤起窗口 + 精确完成判定」
 - [ ] 发布准备（README、文档、npm）
+
+## 配置
+
+在 DSH profile 的 `cordis.patch.yml` 中覆盖本插件的 loader 行配置（**行 id 为 `notice`**），修改后重启 DSH 生效：
+
+```yaml
+- id: notice
+  name: dsh-notice
+  config:
+    events: { approval: true, question: true, turnComplete: true }
+    condition: unfocused   # unfocused | always
+    sound: true
+    mute: false
+```
+
+覆盖是整体替换；缺失项回退默认值。配置生效路径与真机结论见 [docs/spikes/05-notification-rules.md](docs/spikes/05-notification-rules.md)。
 
 ## 已知限制（P0）
 
 - **回合完成是近似判定**：客户端只能看到 `running: true → false`，无法区分正常完成与用户停止 / 报错 / 中断；P0 这些情况都会弹「本轮已完成」，由后续 ticket 用宿主 `turn/end.reason` 收敛（记录见 [docs/spikes/04-client-detection.md](docs/spikes/04-client-detection.md)）。
 - **点击通知不一定把窗口带回前台**：渲染进程无法唤起托盘窗口；P0 只做尽力聚焦，点击桥由宿主半身补强。
+- `sound: false` 的实际静音、`en` 界面文案、子代理并发提醒计数尚未在真机上逐项验收（归入发布验收清单）。
 - 仅支持 Windows 桌面版 DSH；通知会跟随系统语言/界面语言显示中英文文案。
 
 ## 约束

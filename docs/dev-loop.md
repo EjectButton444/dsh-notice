@@ -24,6 +24,12 @@
 - 客户端脚本会被 HMR **重新执行**：顶层 `const/let` 在第二次执行时抛 "already declared" 且静默失败 → 代码必须整体包在 IIFE 内（`client.js` 顶部有注释）。
 - **宿主半身**（`index.js`、`cordis.patch.yml`）：不会自动热替换；需要一次 profile 重组合（改动并保存 profile 的 `cordis.patch.yml`，或在插件页关/开一行）或重启 DSH。
 - 改 `package.json` 的 `exports`/`files`/`dsh` 字段后，需要重新安装或重启才被读取。
+- **改插件配置（#5 起）**：配置在 profile `cordis.patch.yml` 的本插件 loader 行。注意**重组合后行 id 是 `notice`**（仓库 bundle patch 的值），写 `- id: dsh-notice` 的覆盖会被静默跳过；正确流程：
+  1. 在 `C:\Users\19533\.dsh\profiles\desktop\cordis.patch.yml` 追加/修改 `- id: notice / name: dsh-notice / config: {...}`；
+  2. 保存后约 2s 宿主活重组合（**无需重启**），`curl http://127.0.0.1:62809/dsh-notice/config` 应返回新配置（无覆盖时 `{}`）；
+  3. 客户端不会自动重载：`(Get-Item client.js).LastWriteTime = Get-Date` 触发 HMR（约 400ms），客户端重跑 `apply` 并重新 fetch 配置；
+  4. 验证完恢复 profile 原文件（改前备份；`Copy-Item` 回去后同样等 2s 重组合，再 touch 一次 client.js）。
+  - 工具：`.scratch/verify/set-plugin-config.ps1`（可逆增改配置，自动探测行 id）、`probe-plugin-config.mjs`（`--expect` 断言路由）、`watch-notification-state.ps1`（通知生命周期时间线）；写真实 profile 需要 approval 通道（agent 沙箱对 profile 目录只读）。
 - 自检：`node --test "test/*.test.js"`、`node --check index.js && node --check client.js && node --check client.engine.js`；npm 脚本用 `npm.cmd test` / `npm.cmd run check`（PowerShell 执行策略会挡 `npm.ps1`）。
   - **受限 shell 陷阱**：在 agent 沙箱等受限环境里，`node --test` 默认会为每个测试文件 spawn 子进程，可能报 `spawn EPERM`。此时改用 `node --test --test-isolation=none "test/*.test.js"`（单进程），或直接 `node test/*.test.js`。
 
@@ -35,6 +41,7 @@
 - `notification-history.ps1` — WinRT `UserNotificationListener` 读通知中心历史。**注意：本机该接口的 access 状态会变**（#2 时 Allowed，#4 实测变 `Denied`）；遇到 Denied 改用下面的数据库快照。
 - `notification-db-read.mjs` — 读取 Windows 通知数据库（`%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db` 的 .db + .db-wal 快照）输出当前通知中心里的每条 Toast：AUMID、display、title、body、tag、created。**这是 #4 之后最可靠的通知存在性/内容证据通道**（WinRT 被拒时仍可用）。
 - `watch-notifications.ps1` / `window-state.ps1` / `probe-host.mjs` — 通知轮询采集、DSH 窗口状态 JSON、host client graph 探针。
+- `.scratch/verify/`（#5 新增）— `set-plugin-config.ps1`（可逆改 profile 配置、自动探测行 id `notice`、备份/恢复）、`probe-plugin-config.mjs`（断言 `/dsh-notice/config` 内容）、`watch-notification-state.ps1`（按 tag/title 轮询通知生命周期）、`05-config-notes.md`（配置生效路径的源码+实测证据、验收步骤）。
 - `audio-peak.ps1` — CoreAudio 默认播放设备峰值采样，用于判断通知音是否播放（静音基线≈0）。
 - `beacon-server.mjs` — `127.0.0.1:57123` 的临时打点接收器；client 侧 `fetch` 相对/绝对地址均可用，记录到 `beacon.jsonl`（隐藏窗口点击投递测试用过）。
 - `.scratch/notify-debug/`（#4 新增）— `beacon.mjs`（127.0.0.1:57124，记录插件决策打点；打点代码已从源码移除）、`watch.ps1`（定时截图右下角 toast 区域 + 记录前台窗口）、`win.ps1`（最小化/恢复 DSH 窗口）、`graph-rev.mjs`（读 client graph rev，判断 HMR 是否生效）、`uia-session.ps1`（UIA 探针，本机 Electron 未暴露可用的 web UIA 树）。
@@ -53,6 +60,8 @@
 - 隐藏窗口后 `IsWindowVisible` 不可靠：Chromium 可能保留 `WS_VISIBLE` 但窗口在屏幕外（rect 为 -32000/-21333），或变为 iconic。判断「在托盘」用“visible + 非最小化 + 非 DWM cloaked + 与屏幕相交”。
 - 审批策略：runtime 的 approval policy 是 `ask` 时，把一次**被沙箱拒绝的操作**（如写工作区外路径）按工具约定用更宽 `sandbox_permissions` 重试一次，即会弹出真实的授权请求；批准后本会话的文件策略可能被提升为 `danger-full-access`，需要用户在权限预设里切回默认，否则后续不再触发授权事件。
 - `Get-Process -Name 'DeepSeek Harness'` 有时拿不到主窗口句柄（`MainWindowHandle` 为 0，或窗口 pid 查不到进程）；用 `dsh-tray-lib.ps1` 的 `FindMainWindow`（`Chrome_WidgetWin_1` + 标题含 `DeepSeek Harness`）做 UI 自动化可达，但它对 UIA 只暴露 `Chrome Legacy Window`。
+- **Windows/Electron 同名 tag 通知的关闭陷阱（#5 实测并已规避）**：通知中心里已存在同 `tag` 的通知时，再创建一个同 tag 的 Web Notification，平台会**立刻对新对象派发 `close`**；此后该对象的 `close()` 变成 no-op，通知中心条目清不掉。规避：渲染层实际 toast 用唯一 tag（`${会话 tag}#${n}`），替换/关闭前显式关闭旧句柄（`client.js` 已实现）。排查通知「关不掉」时先看这一点。
+- **`@deepseek-ai/schemastery` 在第三方宿主 bundle 里不可解析**（#5 实测 `ERR_MODULE_NOT_FOUND`，系统 node 与 DSH 自带 Electron node 都是）；插件配置的校验/默认值由纯引擎 `normalizeConfig` 承担，不要试图在第三方 `index.js` 里静态 import DSH 内部共享包。
 
 ## 三类注意力事件的真实触发（#4 验收用）
 
@@ -67,4 +76,6 @@
 - `docs/spec.md`、`docs/design-notes.md`、`docs/adr/`
 - `docs/spikes/02-toast-spike.md`（Toast 归属/图标/声音/锁屏、HMR、IIFE 陷阱）
 - `docs/spikes/03-tray-click-baseline.md`（隐藏窗口通知、点击基线、`dsh://open` 计时与 env 陷阱）
+- `docs/spikes/04-client-detection.md`（注意力检测、P0 回合完成近似、engine chunk HMR）
+- `docs/spikes/05-notification-rules.md`（通知规则/配置真机结论、配置生效路径、同名 tag 关闭缺陷）
 - 本机研究笔记（gitignored）：`.scratch/research/report-client-plugin.md`（#4 必读：`uiSession.sessionStatus`、`pendingInteraction`、`running` 边沿、会话行字段）、`report-plugin-api.md`、`report-events.md`
