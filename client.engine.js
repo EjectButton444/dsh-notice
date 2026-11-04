@@ -13,6 +13,10 @@
  * window, "另有 N 项", close-on-resolve, close-completion-on-view, subagent
  * attribution, title fallback, tag.
  *
+ * P1 input normalization (ticket #7): `classifyTurnEnd` / `normalizeTurnEndFrame`
+ * turn the host's `turn/end` reason and SSE frame into the same attention-event
+ * input, so the precise-completion rules stay inside this tested seam.
+ *
  * How it loads:
  *   - In the renderer it is a package-local client chunk served next to client.js
  *     and fetched with `require.async('./client.engine.js')`; the registration at
@@ -44,6 +48,9 @@
     question: EVENT_QUESTION,
   })
 
+  /** The only host `turn/end.reason.kind` that means the turn really finished (ticket #7). */
+  const TURN_END_COMPLETED = 'completed'
+
   const UNTITLED = Object.freeze({ zh: '未命名会话', en: 'Untitled session' })
   const FALLBACK_LOCALE = 'en'
   /** Same-kind events closer than this belong to the wave already on screen (docs/design-notes.md §3.4). */
@@ -63,6 +70,27 @@
   function classifyPending(kind) {
     if (typeof kind !== 'string') return undefined
     return PENDING_KIND_MAP[kind]
+  }
+
+  /**
+   * Classify one host `turn/end.reason` value (the DSH reason object `{ kind }` or
+   * the raw string kind) into the attention event kind. Only a normal completion
+   * notifies: Stop (`aborted`), errors, interruptions, forks, blocks and token
+   * limits all end a turn too and must never look like one (ticket #7).
+   * Never throws.
+   *
+   * @param {{kind?: string} | string | undefined} reason
+   * @returns {'turnComplete' | undefined}
+   */
+  function classifyTurnEnd(reason) {
+    try {
+      if (reason === undefined || reason === null) return undefined
+      const kind = typeof reason === 'string' ? reason : reason.kind
+      return kind === TURN_END_COMPLETED ? EVENT_TURN_COMPLETE : undefined
+    } catch (error) {
+      // A malformed reason object must never disturb the callback that produced it.
+      return undefined
+    }
   }
 
   /** Map any DSH locale identifier onto one of the two shipped dictionaries. */
@@ -137,6 +165,49 @@
       mainSessionId,
       title: titleOf(raw.title, raw.workspace, locale),
       locale,
+    }
+  }
+
+  /**
+   * Normalize one parsed host SSE frame into the reducer's attention-event input
+   * (ticket #7). The host half forwards `{ type: 'turn/end', sessionId, turn?,
+   * reasonKind?, reason?: { kind }, origin?, parentSession? }`; only completed
+   * reasons survive, and the session must be identifiable.
+   *
+   * `parentSession` marks subagent work and is used as `mainSessionId` only then.
+   * Never throws.
+   *
+   * @param {object} frame parsed SSE payload
+   * @returns {{sessionId: string, kind: 'turnComplete', turn?: number,
+   *   isSubagent: boolean, mainSessionId?: string} | null}
+   */
+  function normalizeTurnEndFrame(frame) {
+    try {
+      if (frame === null || typeof frame !== 'object') return null
+      if (frame.type !== 'turn/end') return null
+
+      // The structured reason object wins over the flat alias; classifyTurnEnd
+      // accepts both a reason object and a raw kind string.
+      const reason = frame.reason !== undefined && frame.reason !== null ? frame.reason : frame.reasonKind
+      if (classifyTurnEnd(reason) !== EVENT_TURN_COMPLETE) return null
+
+      const sessionId = typeof frame.sessionId === 'string' ? frame.sessionId.trim() : ''
+      if (sessionId === '') return null
+
+      const origin = typeof frame.origin === 'string' ? frame.origin.trim() : ''
+      const parentSession = typeof frame.parentSession === 'string' ? frame.parentSession.trim() : ''
+      const isSubagent = origin === 'subagent' || parentSession !== ''
+      const turn = typeof frame.turn === 'number' && Number.isFinite(frame.turn) ? frame.turn : undefined
+
+      return {
+        sessionId,
+        kind: EVENT_TURN_COMPLETE,
+        turn,
+        isSubagent,
+        mainSessionId: isSubagent && parentSession !== '' ? parentSession : undefined,
+      }
+    } catch (error) {
+      return null
     }
   }
 
@@ -330,8 +401,10 @@
     DEFAULT_CONFIG,
     WINDOW_MS,
     classifyPending,
+    classifyTurnEnd,
     normalizeConfig,
     normalizeEvent,
+    normalizeTurnEndFrame,
     emptyState,
     reduce,
   })

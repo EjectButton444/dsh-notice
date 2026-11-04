@@ -7,7 +7,11 @@
  *     turn-completion approximation, and `completionUnread` for "completion seen";
  *   - `sessions.list` — `displayTitle` / `cwd` for the toast, `parentId` / `origin`
  *     for subagent attribution, `retainedBy.mainView` for per-session foreground
- *     suppression.
+ *     suppression;
+ *   - the host half's document-relative SSE feed (`dsh-notice/events`, ticket #7)
+ *     for precise `turn/end.reason.kind === 'completed'` signals. Once that feed
+ *     has connected, the P0 `running: true -> false` approximation is gated off
+ *     permanently, so Stop / error / interrupted can never toast again.
  *
  * The pure reducer lives in ./client.engine.js (package-local client chunk). This
  * file only turns DSH state changes into engine observations (attention /
@@ -36,6 +40,12 @@
   const FOCUS_PATH = 'dsh-notice/focus'
   /** Renderer-only marker; the host refuses unmarked requests. */
   const FOCUS_HEADER = 'x-dsh-notice-focus'
+  /**
+   * Document-relative SSE route of the host half (#7): normalized `turn/end`
+   * completion frames. No-build transport, the same mechanism dsh-client-hmr uses
+   * for its `new EventSource('plugins/events')` in the Electron renderer.
+   */
+  const EVENTS_PATH = 'dsh-notice/events'
   const LOG_PREFIX = '[dsh-notice]'
   /** A hung config fetch must not leave notifications silently disabled forever. */
   const CONFIG_TIMEOUT_MS = 3000
@@ -189,6 +199,15 @@
     let previousViewedSessionId
     let previousFocused = false
     let primed = false
+    /**
+     * True once the host SSE feed has connected. From then on turn completion comes
+     * only from precise host `turn/end` frames; the P0 `running` edge fallback stays
+     * off permanently (never reverted on reconnect, so Stop / error / interrupted
+     * can never toast) (ticket #7).
+     */
+    let preciseCompletion = false
+    /** Disposer of the precise-completion SSE subscription (no-op without EventSource). */
+    let disposeFeed = () => {}
 
     function canNotify() {
       if (typeof Notification === 'undefined' || Notification === undefined) return false
@@ -289,14 +308,16 @@
             observe({ type: 'pendingResolved', sessionId, mainSessionId }, rows)
           }
 
-          // `running` true -> false edge -> P0 turn completion (Stop/error also end a
-          // turn this way; ticket #7 replaces this feed with the host `turn/end` reason).
+          // `running` true -> false edge -> P0 turn completion migration fallback
+          // (Stop/error also end a turn this way). Once the host's precise feed has
+          // connected this is gated off forever; ticket #7 makes the host
+          // `turn/end.reason.kind === 'completed'` frame the only completion signal.
           // The engine drops subagent completions; the adapter only skips sessions it
           // has no list row for (attribution and title come from that row).
           const running = status.running === true
           const wasRunning = previousRunning.get(sessionId) === true
           previousRunning.set(sessionId, running)
-          if (primed && wasRunning && !running && row !== undefined && row !== null) {
+          if (primed && !preciseCompletion && wasRunning && !running && row !== undefined && row !== null) {
             observe(
               { type: 'attention', event: { sessionId, kind: 'turnComplete', ...attribute(ctx, sessionId, row, rows, locale) } },
               rows,
@@ -359,6 +380,23 @@
     // plugin started. Real events arrive through the subscriptions from now on.
     reconcile()
 
+    // The running-edge approximation above is only a migration fallback: subscribe
+    // to the host half's precise completion feed once the initial state is primed
+    // (#7). Frames are a read-only side channel; the engine still owns every rule.
+    disposeFeed = subscribeTurnEnd(engine, {
+      onOpen() {
+        preciseCompletion = true
+      },
+      onFrame(frame) {
+        try {
+          const rows = sessionRows(ctx)
+          observe(preciseCompletionObservation(ctx, frame, rows), rows)
+        } catch (error) {
+          warn('turn/end observation failed', error)
+        }
+      },
+    })
+
     return () => {
       try {
         if (typeof disposeStatus === 'function') disposeStatus()
@@ -370,6 +408,12 @@
       } catch (error) {
         warn('session list unsubscribe failed', error)
       }
+      try {
+        disposeFeed()
+      } catch (error) {
+        warn('event feed cleanup failed', error)
+      }
+      disposeFeed = () => {}
       if (listeningForFocus) {
         try {
           window.removeEventListener('focus', onWindowFocus)
@@ -385,6 +429,111 @@
         }
       }
       notifications.clear()
+    }
+  }
+
+  /**
+   * Subscribe to the host half's precise turn-completion SSE feed (#7). Every
+   * parsed frame is normalized by the engine; `handlers.onFrame` only receives
+   * precise completed turn endings. Native EventSource reconnects on its own, so
+   * an `error` event only warns. Returns a disposer that closes the feed and
+   * removes its listeners; a sandbox without EventSource gets a no-op. Never throws.
+   */
+  function subscribeTurnEnd(engine, handlers) {
+    if (typeof EventSource !== 'function') return () => {}
+
+    let source
+    try {
+      source = new EventSource(EVENTS_PATH)
+    } catch (error) {
+      warn('precise completion feed unavailable', error)
+      return () => {}
+    }
+
+    const onOpen = () => {
+      try {
+        handlers.onOpen()
+      } catch (error) {
+        warn('precise completion feed open handler failed', error)
+      }
+    }
+
+    const onMessage = (event) => {
+      try {
+        const data = event !== undefined && event !== null ? event.data : undefined
+        if (typeof data !== 'string' || data === '') return
+        let parsed
+        try {
+          parsed = JSON.parse(data)
+        } catch (error) {
+          warn('unparseable turn/end frame', error)
+          return
+        }
+        const frame = engine.normalizeTurnEndFrame(parsed)
+        if (frame === null || frame === undefined) return
+        handlers.onFrame(frame)
+      } catch (error) {
+        warn('turn/end frame dropped', error)
+      }
+    }
+
+    const onError = () => {
+      // EventSource retries natively; a dead feed must never disturb the session.
+      warn('precise completion feed disconnected; EventSource will retry')
+    }
+
+    try {
+      source.addEventListener('open', onOpen)
+      source.addEventListener('message', onMessage)
+      source.addEventListener('error', onError)
+    } catch (error) {
+      warn('precise completion feed subscription failed', error)
+      closeTurnEndSource(source)
+      return () => {}
+    }
+
+    return () => {
+      try {
+        source.removeEventListener('open', onOpen)
+        source.removeEventListener('message', onMessage)
+        source.removeEventListener('error', onError)
+      } catch (error) {
+        warn('precise completion feed unsubscribe failed', error)
+      }
+      closeTurnEndSource(source)
+    }
+  }
+
+  function closeTurnEndSource(source) {
+    try {
+      source.close()
+    } catch (error) {
+      warn('precise completion feed close failed', error)
+    }
+  }
+
+  /**
+   * Build the reducer's attention observation for one normalized host `turn/end`
+   * frame, reusing the sessions.list attribution helpers (#7). The client list row
+   * is authoritative; the host's `parentSession` only fills in when the client
+   * cannot walk the parent chain itself.
+   */
+  function preciseCompletionObservation(ctx, frame, rows) {
+    const row = rows[frame.sessionId]
+    const isSubagent = frame.isSubagent === true || isSubagentSession(row)
+    const mainSessionId = (isSubagent ? mainSessionIdOf(frame.sessionId, rows) : undefined) ?? frame.mainSessionId
+    const labelRow = mainSessionId !== undefined ? rows[mainSessionId] : row
+    return {
+      type: 'attention',
+      event: {
+        sessionId: frame.sessionId,
+        kind: 'turnComplete',
+        isSubagent,
+        mainSessionId,
+        title: labelRow !== undefined && labelRow !== null ? labelRow.displayTitle : undefined,
+        workspace: workspaceOf(labelRow !== undefined && labelRow !== null ? labelRow.cwd : undefined),
+        locale: currentLocale(ctx),
+      },
     }
   }
 

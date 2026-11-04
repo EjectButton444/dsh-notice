@@ -78,7 +78,7 @@ test('bundle patch inserts exactly one loader row named after the package', () =
   assert.deepEqual(names, ['dsh-notice'])
 })
 
-test('host half serves the profile config and mounts the notification click bridge', async () => {
+test('host half serves the profile config, the click bridge and the completion feed', async () => {
   const host = await import('../index.js')
 
   assert.equal(host.name, 'dsh-notice')
@@ -94,11 +94,13 @@ test('host half serves the profile config and mounts the notification click brid
   }
   host.apply(fakeCtx(routes), settings)
 
-  assert.equal(routes.length, 2, 'the config route and the notification click bridge are both mounted')
+  assert.equal(routes.length, 3, 'the config route, the notification click bridge and the turn-completion feed are all mounted')
   const configRoute = routeAt(routes, '/dsh-notice/config')
   const focusRoute = routeAt(routes, '/dsh-notice/focus')
+  const eventsRoute = routeAt(routes, '/dsh-notice/events')
   assert.equal(configRoute.kind, 'exact')
   assert.equal(focusRoute.kind, 'exact')
+  assert.equal(eventsRoute.kind, 'exact')
 
   const response = fakeResponse()
   configRoute.handler({ method: 'GET' }, response)
@@ -272,6 +274,11 @@ function fakeCtx(routes) {
       const dispose = callback()
       assert.equal(typeof dispose, 'function', 'the route registration must be disposable')
       return dispose
+    },
+    on(event, listener) {
+      assert.equal(event, 'session/event', 'the host half only subscribes the session log')
+      assert.equal(typeof listener, 'function')
+      return () => {}
     },
     webServer: {
       register(route) {
