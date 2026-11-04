@@ -1,4 +1,4 @@
-Status: done (2026-11-04) — 实现与单测已落地；三类事件与前台抑制的真机验收记录见 [docs/spikes/04-client-detection.md](../spikes/04-client-detection.md)。
+Status: done (2026-11-04) — 实现提交 `857b862`；三类事件与前台抑制的真机验收记录见 [docs/spikes/04-client-detection.md](../spikes/04-client-detection.md)。
 
 ## Parent
 

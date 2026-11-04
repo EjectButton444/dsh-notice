@@ -74,3 +74,8 @@
 - 点击通知聚焦仍是 P0 尽力而为（渲染进程 `window.focus()`），托盘隐藏时无效；[#6](../tickets/06-click-bridge.md) 的宿主点击桥负责。
 - 回合完成的精确语义（Stop/报错不再弹）在 [#7](../tickets/07-precise-turn-completion.md)。
 - 「前台但看别的会话仍弹」的真机复核归入 [#8](../tickets/08-acceptance-release.md) 真机清单。
+
+## 提交
+
+- 实现与单测：`857b862`（`feat: client attention detection and notification decision engine (#4)`）
+- 验收记录与文档更新：随本文件所在提交。
