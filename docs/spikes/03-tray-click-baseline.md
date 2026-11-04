@@ -42,7 +42,7 @@
 - 宿主侧要求：spawn 前清除 `ELECTRON_RUN_AS_NODE` 等 Electron-as-node 开关；所有失败静默（通知是旁路）。
 - 兜底方案：`dsh://open` 不可用时宿主直接 Win32 `ShowWindow + SetForegroundWindow`；仍失败则降级为「尽力聚焦」并在 README 记录。
 - 验收标准 2 可按「点击后约 0.2–1s 窗口回到前台」验收。
-- **#6 实现后修正（2026-11-04）**：上述协议结论的成立前提是**宿主进程能完成 `dsh://open` 单实例握手**。本机 #6 实测 DSH 宿主半身为低完整性级别，协议第二实例在握手前退出（`0x80000003`），窗口不恢复；因此最终实现以「宿主直接 Win32 消息（`WM_SYSCOMMAND/SC_RESTORE` + `SetForegroundWindow`）」为**主路径**、`dsh://open` 仅作兜底，并发现 Node `detached:true` + `stdio:'ignore'` 会让 PowerShell 不执行脚本。偏差与证据见 [spikes/06-click-bridge.md](06-click-bridge.md)。
+- **#6 实现后修正（2026-11-04）**：上述协议结论的成立前提是**宿主进程能完成 `dsh://open` 单实例握手**。本机 #6 实测 DSH 宿主/工具进程为低完整性级别，协议第二实例在握手前退出（`0x80000003`），窗口不恢复；并且外部 Win32 显示虽然能把窗口“画”出来，却让 Chromium 渲染器保持冻结（点不动、无提问卡片）。最终实现改为**以应用原生路径为主**：向 Electron 的 `Electron_NotifyIconHostWindow` 投递托盘点击消息触发 `focusPrimaryWindow()`（窗口恢复且完全可交互），Win32 消息与 `dsh://open` 仅作兜底；另外发现 Node `detached:true` + `stdio:'ignore'` 会让 PowerShell 不执行脚本。偏差、耗时与真人点击证据见 [spikes/06-click-bridge.md](06-click-bridge.md)。
 
 ## 证据与产物（本地 `.scratch/verify/`，已 gitignore，未提交）
 

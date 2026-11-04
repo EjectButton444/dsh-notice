@@ -113,7 +113,7 @@
 ### P1：宿主半身补强
 
 - 宿主半身订阅 `issue/request` 类事件（`prepend: true` + `next()`）与 `session/event` 的 `turn/end`，把「精确完成原因」通过 **SSE** 推给客户端（免构建通道：`ctx.webServer.register()`，客户端 document-relative `fetch('plugins/notice/events')`，与 `dsh-client-hmr` 同款）——**#6 只做了点击桥，#7 做本段**。
-- 点击桥（#6，已实现，见 [spikes/06](spikes/06-click-bridge.md)）：客户端通知点击 → 带标记头 document-relative `POST /dsh-notice/focus` → 宿主立即 204 并 spawn 随包发布的 `focus.ps1`；helper 先直接 Win32 `PostMessage(WM_SYSCOMMAND, SC_RESTORE)` + `SetForegroundWindow`（后台场景再加 `AttachThreadInput` 前台锁兜底与一次 `SC_RESTORE`），窗口存在但确实无法抬前时才兜底 `Start-Process 'dsh://open'`。spawn 环境先清洗 `ELECTRON_RUN_AS_NODE`；**不要用 Node 的 `detached: true`**（Windows 上配合 `stdio: 'ignore'` 会让 PowerShell 立即退出），用普通子进程 + `unref()`。渲染进程内无法直接唤起托盘窗口，故必须走宿主。
+- 点击桥（#6，已实现，见 [spikes/06](spikes/06-click-bridge.md)）：客户端通知点击 → 带标记头 document-relative `POST /dsh-notice/focus` → 宿主立即 204 并 spawn 随包发布的 `focus.ps1`。helper 三段式：① **主路径**向应用进程的 `Electron_NotifyIconHostWindow` 投递 Electron 托盘点击消息（`WM_APP+1` / icon id 2 / `WM_LBUTTONDOWN`），让 DSH 自己的 `focusPrimaryWindow()` 做原生 restore+show+focus——外部 Win32 显示会让 Chromium 渲染器冻结（窗口可见但点不动、无渲染更新），只有应用原生路径能恢复可交互窗口；② Win32 兜底（`SC_RESTORE` / `ShowWindow` / `SetForegroundWindow` + `AttachThreadInput` 前台锁变通），只保证显示；③ 窗口存在但抬不起时最后 `Start-Process 'dsh://open'`。隐藏窗口可能保留 `GetForegroundWindow()` 句柄，判断"已聚焦"必须同时要求 OnScreen。spawn 环境先清洗 `ELECTRON_RUN_AS_NODE`；**不要用 Node 的 `detached: true`**（Windows 上配合 `stdio: 'ignore'` 会让 PowerShell 立即退出），用普通子进程 + `unref()`。渲染进程内无法直接唤起托盘窗口，故必须走宿主。
 - 宿主仍只做旁路：任何失败只记日志，绝不阻塞会话。
 
 ## 6. 约束与兼容
