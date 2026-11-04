@@ -1,4 +1,4 @@
-Status: pending
+Status: done (2026-11-04) — 结论与证据见 [docs/spikes/03-tray-click-baseline.md](../spikes/03-tray-click-baseline.md)。
 
 ## Parent
 

@@ -24,8 +24,8 @@
 | 阶段 | 目标 | 验证的风险 | 产物 |
 |---|---|---|---|
 | S0 | 环境就绪：GitHub tracker、gh 登录、DSH plugin 开发环（link 安装 + HMR） | — | `docs/agents/*`、仓库、最小可装插件 |
-| S1 | **Spike：最小 client 插件弹一条 Toast** | R1、R2 | 结论（归属/图标/声音是否可接受）+ 决定渠道是否维持 ADR-0001 |
-| S2 | **Spike：隐藏窗口 + 点击基线** | R3、R7 | 结论（隐藏时是否弹、`dsh://open` 唤起行为）→ 决定 P1 点击桥形态 |
+| S1 | **Spike：最小 client 插件弹一条 Toast** | R1、R2 | 结论（归属/图标/声音是否可接受）+ 决定渠道是否维持 ADR-0001；已完成，见 [spikes/02-toast-spike.md](spikes/02-toast-spike.md) |
+| S2 | **Spike：隐藏窗口 + 点击基线** | R3、R7 | 结论（隐藏时是否弹、`dsh://open` 唤起行为）→ 决定 P1 点击桥形态；已完成，见 [spikes/03-tray-click-baseline.md](spikes/03-tray-click-baseline.md) |
 | S3 | 客户端垂直切片：注意力检测 + 决策逻辑 + 单测 | R5（接受近似）、R8 | 可运行、可测 |
 | S4 | 客户端垂直切片：通知规则（合并/消解/声音/i18n/配置） | R9、R10 | 验收标准 3/4/5 |
 | S5 | 宿主半身：精确 `turn/end` + 点击桥 + 安全钩子 | R3、R4、R5 | 验收标准 1/2/6 |
