@@ -1,6 +1,9 @@
 # 研究过程资料（asar 解包、DSH 内部调研），不提交到公开仓库
 .scratch/research/
 
+# 真机验证临时产物（截图、探针脚本、通知记录）
+.scratch/verify/
+
 # 依赖与产物
 node_modules/
 dist/

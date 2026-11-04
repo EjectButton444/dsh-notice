@@ -1,0 +1,5 @@
+# dsh-notice bundle layer: inserts the plugin's own Loader row. User overrides
+# (config, disabled) belong in the profile's cordis.patch.yml, not here.
+- insert:
+    - id: notice
+      name: dsh-notice
