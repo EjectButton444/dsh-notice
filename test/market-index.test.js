@@ -22,8 +22,6 @@ const INDEX = JSON.parse(readFileSync(INDEX_URL, "utf8"));
 const MANIFEST = JSON.parse(readFileSync(PACKAGE_URL, "utf8"));
 const PLUGIN = INDEX.plugins[0];
 const LATEST = PLUGIN.versions[0];
-/** 2026-11-05T03:00:00+08:00, the scheduled 1.0.0 release instant. */
-const EXPECTED_PUBLISH_TIMESTAMP = Date.parse("2026-11-05T03:00:00+08:00") / 1000;
 
 /**
  * Spawn the validator with its output redirected to files. The DSH file sandbox
@@ -105,13 +103,14 @@ test("plugin icon is an inline base64 SVG no larger than 32 KiB, copied from ico
   assert.ok(decoded.equals(readFileSync(ICON_URL)), "icon must inline the bytes of the repository icon.svg");
 });
 
-test("single 1.0.0 npm version carries the scheduled publish timestamp and engines range", () => {
+test("single 1.0.0 npm version carries a plausible publish timestamp and engines range", () => {
   assert.equal(PLUGIN.versions.length, 1);
   assert.equal(LATEST.version, "1.0.0");
   assert.deepEqual(LATEST.source, { type: "npm" });
   assert.equal(Number.isInteger(LATEST.publishTimestamp), true);
-  assert.equal(LATEST.publishTimestamp, EXPECTED_PUBLISH_TIMESTAMP);
-  assert.equal(LATEST.publishTimestamp, 1793818800);
+  // Integer Unix seconds, recorded from npm after publishing: not in the future.
+  assert.ok(LATEST.publishTimestamp > Date.parse("2026-11-01T00:00:00Z") / 1000);
+  assert.ok(LATEST.publishTimestamp <= Date.now() / 1000 + 60);
   assert.equal(LATEST.engines?.dsh, ">=0.2.1-rc.5 <0.3.0");
 });
 
