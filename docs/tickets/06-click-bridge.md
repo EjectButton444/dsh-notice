@@ -27,7 +27,7 @@ Status: done (2026-11-04) — 真机验收通过；实现提交 `b03b19d` + 修�
 
 ## 实现偏差（#6 实测，来自 #3 结论的适用条件修正）
 
-- #3 的「`Start-Process 'dsh://open'` 即可唤起隐藏窗口」在**低完整性宿主**下不成立：本机宿主/工具进程是 Low 完整性，第二实例在单实例握手前退出（退出码 `0x80000003`），窗口不恢复。
+- #3 的「`Start-Process 'dsh://open'` 即可唤起隐藏窗口」在本机宿主上下文中不成立：从工具 shell（Low 完整性）与宿主 spawn 的 helper（Medium）启动的第二实例都在单实例握手前退出（退出码 `0x80000003`），窗口不恢复——问题在启动/沙箱上下文，而非单纯完整性级别。
 - 更关键：**外部 Win32 恢复（`SC_RESTORE`/`ShowWindow`）只能把窗口“显示”出来，Chromium 渲染器仍处于冻结状态**（4 秒内窗口区域零像素变化、无提问卡片、点击无反馈）——用户实测「窗口回来了但不可操作」。
 - 最终实现 = **应用原生路径为主**：向 Electron 的 `Electron_NotifyIconHostWindow` 投递托盘点击消息（`WM_APP+1` / icon id 2 / `WM_LBUTTONDOWN`），触发 DSH 自己的 `focusPrimaryWindow()` → 窗口恢复且**完全可交互**；其次是 Win32 消息兜底，最后才是 `dsh://open`。
 - 实现中还规避了：Node `detached: true` + `stdio: 'ignore'` 会让 `powershell.exe` 不执行脚本直接退出（改普通子进程 + `unref()`）；`focus.ps1` 必须纯 ASCII（PowerShell 5.1 对无 BOM 脚本按 ANSI 解码）；隐藏窗口可能保留前台句柄导致“误判已聚焦”（`FocusedNow` 必须同时要求 OnScreen）。

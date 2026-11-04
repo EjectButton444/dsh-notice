@@ -42,7 +42,7 @@
 ## 已知限制
 
 - **回合完成是近似判定**：客户端只能看到 `running: true → false`，无法区分正常完成与用户停止 / 报错 / 中断；P0 这些情况都会弹「本轮已完成」，由后续 ticket 用宿主 `turn/end.reason` 收敛（记录见 [docs/spikes/04-client-detection.md](docs/spikes/04-client-detection.md)）。
-- **点击通知的窗口恢复**：P1 点击桥已实现并真机验收（隐藏到托盘 / 最小化 / 后台均能把窗口带回前台且可正常操作，失败静默）。特别地，本机低完整性宿主下 `dsh://open` 第二实例无法完成单实例握手，且外部 Win32 显示会让 Chromium 渲染器冻结——主路径改为触发应用自己的托盘点击（`focusPrimaryWindow()` 原生 restore+show+focus），详见 [docs/spikes/06-click-bridge.md](docs/spikes/06-click-bridge.md)。该主路径依赖 Electron 44.7.0 的托盘消息契约，DSH 升级后需按发布验收清单复核。Windows 锁屏时系统不允许任何程序抢前台，属预期行为。
+- **点击通知的窗口恢复**：P1 点击桥已实现并真机验收（隐藏到托盘 / 最小化 / 后台均能把窗口带回前台且可正常操作，失败静默）。特别地，本机宿主上下文无法完成 `dsh://open` 单实例握手（第二实例在握手前退出；agent 工具 shell 为 Low 完整性、宿主 spawn 的 helper 为 Medium，问题在启动/沙箱上下文），且外部 Win32 显示会让 Chromium 渲染器冻结——主路径改为触发应用自己的托盘点击（`focusPrimaryWindow()` 原生 restore+show+focus），详见 [docs/spikes/06-click-bridge.md](docs/spikes/06-click-bridge.md)。该主路径依赖 Electron 44.7.0 的托盘消息契约，DSH 升级后需按发布验收清单复核。Windows 锁屏时系统不允许任何程序抢前台，属预期行为。
 - **点击不定位到具体会话**：DSH 没有会话深链，点击最多把窗口带回前台。
 - `sound: false` 的实际静音、`en` 界面文案、子代理并发提醒计数尚未在真机上逐项验收（归入发布验收清单）。
 - 仅支持 Windows 桌面版 DSH；通知会跟随系统语言/界面语言显示中英文文案。

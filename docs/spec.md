@@ -107,7 +107,7 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
 - 默认 `unfocused`：仅当 DSH 窗口未聚焦、或聚焦但当前主视图会话 ≠ 事件会话时发通知；`always` 时跳过该判定。
 - 声音：`silent` 由 `sound` 配置与静音状态决定。
 - 消解：授权/提问的 `pendingInteraction` 消失，或回合完成的会话被打开（成为主视图 / 未读完成被清除）时关闭通知。
-- 点击：P0 尽力聚焦；P1 由宿主执行点击桥（单实例 → `focusPrimaryWindow()` restore+show+focus），接受 1–3 秒冷启动。**实现注记（2026-11-04，#6）**：真机实测宿主半身运行在比 Desktop 窗口更低的完整性级别，从该环境启动 `dsh://open` 的第二实例在单实例握手前即退出；且外部 Win32 显示（`SC_RESTORE`/`ShowWindow`）会让 Chromium 渲染器保持冻结（窗口可见但点不动）。因此最终实现为「宿主端点 + `focus.ps1`」三段式：**主路径**向应用进程的 `Electron_NotifyIconHostWindow` 投递 Electron 托盘点击消息（`WM_APP+1` / icon id 2 / `WM_LBUTTONDOWN`），由应用自己的 `focusPrimaryWindow()` 原生 restore+show+focus（窗口完全可交互）；② Win32 消息兜底（`SC_RESTORE`/`ShowWindow`/`SetForegroundWindow` + `AttachThreadInput` 前台锁变通，只保证显示）；③ 最后才 `Start-Process 'dsh://open'`。客户端 `notification.onclick` 带标记头 document-relative `POST /dsh-notice/focus`，失败静默。偏差与证据见 [spikes/06](spikes/06-click-bridge.md)。
+- 点击：P0 尽力聚焦；P1 由宿主执行点击桥（单实例 → `focusPrimaryWindow()` restore+show+focus），接受 1–3 秒冷启动。**实现注记（2026-11-04，#6）**：真机实测本机宿主上下文无法完成 `dsh://open` 单实例握手（第二实例在握手前退出；agent 工具 shell 为 Low 完整性、宿主 spawn 的 helper 为 Medium，问题在启动/沙箱上下文而非单纯完整性）；且外部 Win32 显示（`SC_RESTORE`/`ShowWindow`）会让 Chromium 渲染器保持冻结（窗口可见但点不动）。因此最终实现为「宿主端点 + `focus.ps1`」三段式：**主路径**向应用进程的 `Electron_NotifyIconHostWindow` 投递 Electron 托盘点击消息（`WM_APP+1` / icon id 2 / `WM_LBUTTONDOWN`），由应用自己的 `focusPrimaryWindow()` 原生 restore+show+focus（窗口完全可交互）；② Win32 消息兜底（`SC_RESTORE`/`ShowWindow`/`SetForegroundWindow` + `AttachThreadInput` 前台锁变通，只保证显示）；③ 最后才 `Start-Process 'dsh://open'`。客户端 `notification.onclick` 带标记头 document-relative `POST /dsh-notice/focus`，失败静默。偏差与证据见 [spikes/06](spikes/06-click-bridge.md)。
 
 ## 兼容与约束
 

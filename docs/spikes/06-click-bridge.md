@@ -22,12 +22,12 @@
 
 ## 与 #3 结论的偏差（重要）
 
-[#3](03-tray-click-baseline.md) 的结论是「宿主 `Start-Process 'dsh://open'` 恢复隐藏窗口，实测 0.16–0.23s」，#6 实测发现该结论依赖**宿主进程的完整性级别**，并进一步发现「窗口显示出来」≠「窗口可用」：
+[#3](03-tray-click-baseline.md) 的结论是「宿主 `Start-Process 'dsh://open'` 恢复隐藏窗口，实测 0.16–0.23s」，#6 实测发现该结论依赖**宿主进程的启动/沙箱上下文**（完整性级别只是其中一个可观测差异，不是完整解释），并进一步发现「窗口显示出来」≠「窗口可用」：
 
 | 事实 | 证据 |
 |---|---|
 | 工具 shell 是 **Low 完整性**（`whoami /groups` = `Mandatory Label\Low`）；DSH 宿主 spawn 的 helper 是 **Medium**（helper 日志实测 `Mandatory Label\Medium`），但 Desktop 窗口进程（pid 5724）对低完整性 shell 不可查询 | 进程/权限实测 |
-| 从低完整性 shell 或宿主启动的 `dsh://open` 第二实例**在单实例握手前退出**（退出码 `0x80000003`，<1s），窗口不恢复；helper 的协议兜底实测同样无效 | 直接启动 exe、`dsh://open`、helper 协议段日志 |
+| 从工具 shell（Low）或宿主 spawn 的 helper（Medium）启动的 `dsh://open` 第二实例**在单实例握手前退出**（退出码 `0x80000003`，<1s），窗口不恢复；helper 的协议兜底实测同样无效。⇒ 问题在启动/沙箱上下文，而非单纯完整性级别（两处上下文不同却同样失败） | 直接启动 exe、`dsh://open`、helper 协议段日志 |
 | 从 Low 完整性 shell 发 `WM_SYSCOMMAND` 可用（`SC_CLOSE` 走应用 close-to-tray；`SC_RESTORE` 约 4ms 恢复显示），但 `WM_CLOSE`、`ShowWindow` API 被拦 | 消息实验 |
 | **外部 Win32 恢复后 Chromium 渲染器仍冻结**：窗口 on-screen/focused，但 4 秒内窗口区域像素零变化（DSH UI 有每秒更新的计时文本），提问卡片不出现、点击无视觉反馈——用户实测「窗口回来了但不可操作」 | 屏幕差分 + 两次真人点击 |
 | 改走 **Electron 托盘点击事件**后：窗口恢复（~350–550ms）且**渲染恢复**（屏幕差分出现大面积变化），用户确认真人点击通知后「回来了，可正常操作」 | 屏幕差分 + 真人验收（18:47:41） |
