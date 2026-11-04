@@ -21,7 +21,7 @@
 - [x] P0：通知规则补全（每会话单条 / 替换 / 3s 合并 / 另有 N 项 / 消解关闭 / 配置 / zh-en 文案）
 - [x] P1：宿主点击桥——点击通知唤起 DSH 窗口（托盘隐藏 / 最小化 / 后台均实测通过，失败静默）
 - [x] v1.1：点击通知自动切换到等待操作的会话（`uiWorkspace.openSession`，真机验收通过）
-- [x] P1：宿主精确完成判定（Stop / 报错 / 中断不再弹「本轮已完成」，真机验收通过）
+- [x] P1：宿主精确完成判定（宿主 `turn/end` + SSE；Stop 真机验收通过，报错/中断/fork/token 上限由同一宿主过滤分支的单测覆盖）
 - [ ] 发布准备（README、文档、npm）
 
 ## 配置
@@ -42,7 +42,7 @@
 
 ## 已知限制
 
-- **回合完成是精确判定（#7）**：宿主半身 observe-only 订阅 DSH `session/event` 的 `turn/end`，只有 `reason.kind === 'completed'` 才经免构建 SSE 端点（`GET /dsh-notice/events`，客户端 document-relative `EventSource`）下发给客户端；用户按 Stop（`aborted`）、报错、中断、fork、token 上限都不再弹「本轮已完成」。客户端在 SSE 首次连上后永久进入精确模式；SSE 未连通的迁移回退窗口内才用 `running` 边沿近似。SSE 无心跳、无重放：断线期间完成的回合**不补发**（宁可漏提醒也不误提醒），EventSource 会自动重连（验收记录见 [docs/spikes/07-precise-turn-completion.md](docs/spikes/07-precise-turn-completion.md)）。
+- **回合完成是精确判定（#7）**：宿主半身 observe-only 订阅 DSH `session/event` 的 `turn/end`，只有 `reason.kind === 'completed'` 才经免构建 SSE 端点（`GET /dsh-notice/events`，客户端 document-relative `EventSource`）下发给客户端；**用户按 Stop（`aborted`）不再弹「本轮已完成」（真机验收）**，报错 / 中断 / fork / token 上限与 Stop 共用同一条宿主过滤（单测逐项覆盖；本机无法稳定制造这些真机事件）。客户端在 SSE 首次连上后永久进入精确模式；SSE 未连通的迁移回退窗口内才用 `running` 边沿近似（每次页面载入后通常 <1s），之后即永久精确。SSE 无心跳、无重放：断线期间完成的回合**不补发**（宁可漏提醒也不误提醒），EventSource 会自动重连（验收记录见 [docs/spikes/07-precise-turn-completion.md](docs/spikes/07-precise-turn-completion.md)）。
 - **点击通知的窗口恢复**：P1 点击桥已实现并真机验收（隐藏到托盘 / 最小化 / 后台均能把窗口带回前台且可正常操作，失败静默）。特别地，本机宿主上下文无法完成 `dsh://open` 单实例握手（第二实例在握手前退出；agent 工具 shell 为 Low 完整性、宿主 spawn 的 helper 为 Medium，问题在启动/沙箱上下文），且外部 Win32 显示会让 Chromium 渲染器冻结——主路径改为触发应用自己的托盘点击（`focusPrimaryWindow()` 原生 restore+show+focus），详见 [docs/spikes/06-click-bridge.md](docs/spikes/06-click-bridge.md)。该主路径依赖 Electron 44.7.0 的托盘消息契约，DSH 升级后需按发布验收清单复核。Windows 锁屏时系统不允许任何程序抢前台，属预期行为。
 - **点击通知会先切到对应会话**：v1.1 起点击通知会通过公开客户端服务 `uiWorkspace.openSession(target)` 选中事件所属会话，再聚焦窗口（在别的会话时也能一步跳回等待操作的会话，真机验收通过）。该服务缺失或调用失败时静默退回旧行为（只聚焦、不切会话，见 [docs/tickets/09-notification-click-open-session.md](docs/tickets/09-notification-click-open-session.md)）；点击子代理归并来的通知会打开其主会话。
 - `sound: false` 的实际静音、`en` 界面文案、子代理并发提醒计数尚未在真机上逐项验收（归入发布验收清单）。

@@ -514,25 +514,22 @@
 
   /**
    * Build the reducer's attention observation for one normalized host `turn/end`
-   * frame, reusing the sessions.list attribution helpers (#7). The client list row
-   * is authoritative; the host's `parentSession` only fills in when the client
-   * cannot walk the parent chain itself.
+   * frame (#7). The client list row is authoritative for attribution; the host's
+   * `parentSession` only fills in when the client cannot walk the parent chain
+   * itself. Title/workspace/locale reuse the same helper as every other event.
    */
   function preciseCompletionObservation(ctx, frame, rows) {
     const row = rows[frame.sessionId]
     const isSubagent = frame.isSubagent === true || isSubagentSession(row)
     const mainSessionId = (isSubagent ? mainSessionIdOf(frame.sessionId, rows) : undefined) ?? frame.mainSessionId
-    const labelRow = mainSessionId !== undefined ? rows[mainSessionId] : row
     return {
       type: 'attention',
       event: {
+        ...attribute(ctx, frame.sessionId, row, rows, currentLocale(ctx)),
         sessionId: frame.sessionId,
         kind: 'turnComplete',
         isSubagent,
         mainSessionId,
-        title: labelRow !== undefined && labelRow !== null ? labelRow.displayTitle : undefined,
-        workspace: workspaceOf(labelRow !== undefined && labelRow !== null ? labelRow.cwd : undefined),
-        locale: currentLocale(ctx),
       },
     }
   }

@@ -23,8 +23,8 @@
 
 | 注意力事件 | P0（纯客户端） | P1（加宿主半身） |
 |---|---|---|
-| 授权请求 | `uiSession.sessionStatus` 中该会话 `pendingInteraction.kind === 'approval'` 出现 | 同 P0；宿主 `approval/request` 用于补全细节与审计 |
-| 提问请求 | `pendingInteraction.kind === 'question'` 出现 | 同 P0；宿主 `user-questions/request` 补全 |
+| 授权请求 | `uiSession.sessionStatus` 中该会话 `pendingInteraction.kind === 'approval'` 出现 | 同 P0；宿主 `approval/request` 订阅 v1 未实现（P0 的 `pendingInteraction` 已覆盖提醒，宿主细节留待 v2） |
+| 提问请求 | `pendingInteraction.kind === 'question'` 出现 | 同 P0；宿主 `user-questions/request` 订阅 v1 未实现（同上） |
 | 回合完成 | `running` 由 `true → false` 的边沿（主会话） | 宿主 `session/event` + `turn/end.reason.kind === 'completed'` 精确判定，经 SSE 下发（#7 已实现） |
 
 已知陷阱（实现时必须处理）：
@@ -32,7 +32,7 @@
 1. **不要**用 `ctx.remote.$on('approval/request')`——客户端 waterfall 先到先得，官方 UI 插件先认领；用 `pendingInteraction` 状态。
 2. **不要**把 `completionUnread` 当「回合完成」的触发信号：它只对「非主视图会话」置位，主视图正在显示的会话不会触发。要自己监听 `running` 边沿。**但**它可用于消解：清除（人已看到完成）是关闭「本轮已完成」通知的信号之一（见 §3.5）；焦点回到该会话也算看到（适配层监听 window focus）。
 3. P0 的「完成」是近似判定（`running → false`），用户按 Stop、报错、中断都会触发；P1 用宿主 `turn/end` 原因过滤，只保留 `completed`（排除 `aborted / error / interrupted / forked / blocked / max-tokens`）。**#7 已实现**：宿主侧过滤 + SSE 下发，客户端在 SSE 首次 `open` 后永久进入精确模式，P0 近似仅作迁移回退（见 [spikes/07](spikes/07-precise-turn-completion.md)）。
-4. 宿主半身订阅 `approval/request`、`user-questions/request` 必须 `{ prepend: true }` 且 `return next()`；监听器抛错会让审批 fail-closed 成 `unavailable`，与「只读旁路」原则冲突——所有钩子逻辑用 try/catch 包裹，永不阻塞。
+4. 宿主半身若订阅 `approval/request`、`user-questions/request`（v1 **未订阅**，P0 已覆盖提醒），必须 `{ prepend: true }` 且 `return next()`；监听器抛错会让审批 fail-closed 成 `unavailable`，与「只读旁路」原则冲突——所有钩子逻辑用 try/catch 包裹，永不阻塞。`session/event` 是普通 emit（#7 使用），`prepend` 只对 waterfall 有意义，顺序无关；即便如此仍全域 try/catch。
 5. 子代理会话行会被注入 `sessions.byId`（`origin === 'subagent' || parentId !== undefined`），必须靠 `parentId` 找到主会话并过滤/归并。
 
 ## 3. 提醒规则
@@ -112,7 +112,7 @@
 
 ### P1：宿主半身补强
 
-- 宿主半身订阅 `session/event` 的 `turn/end`（observe-only，`ctx.on`），把「精确完成原因」通过 **SSE** 推给客户端（免构建通道：`ctx.webServer.register()` 注册 `GET /dsh-notice/events`，客户端 document-relative `new EventSource('dsh-notice/events')`，与 `dsh-client-hmr` 同款；无新依赖）——**#7 已实现**（[spikes/07](spikes/07-precise-turn-completion.md)）。宿主只做归一化：只有 `event.data.reason.kind === 'completed'` 才产出帧（`{ type:'turn/end', sessionId, reasonKind:'completed', turn?, origin?, parentSession? }`），其它 reason（Stop=`aborted`、`error`、`interrupted`、`forked`、`blocked`、`max-tokens`）一律丢弃；不重复实现通知规则（子代理完成仍由引擎丢弃）。客户端首次 `EventSource` `open` 后**永久进入精确模式**：只接受该帧作为回合完成信号，P0 `running` 近似关闭；SSE 未连通时保留 P0 近似作为迁移回退（旧宿主没有该路由）。断线只 warn、由 EventSource 原生重连，无心跳、无重放（断线期间完成的回合不补发）。归一化逻辑在两个半身的纯 seam 上单测（宿主 `normalizeTurnEnd`、引擎 `normalizeTurnEndFrame`/`classifyTurnEnd`）。
+- 宿主半身订阅 `session/event` 的 `turn/end`（observe-only，`ctx.on`；`prepend` 只对 waterfall 有意义），把「精确完成原因」通过 **SSE** 推给客户端（免构建通道：`ctx.webServer.register()` 注册 `GET /dsh-notice/events`，客户端 document-relative `new EventSource('dsh-notice/events')`，与 `dsh-client-hmr` 同款；无新依赖）——**#7 已实现**（[spikes/07](spikes/07-precise-turn-completion.md)）。宿主只做归一化：`toCompletionFrame(session, event)` 只在 `event.data.reason.kind === 'completed'` 时产出帧（`{ type:'turn/end', sessionId, reasonKind:'completed', turn?, origin?, parentSession? }`，`turn` 仅作观测装饰），其它 reason（Stop=`aborted`、`error`、`interrupted`、`forked`、`blocked`、`max-tokens`）一律丢弃；线上只有平铺 `reasonKind` 一种形态（客户端不接受 `reason` 对象形态）。不重复实现通知规则（子代理完成仍由引擎丢弃）。客户端首次 `EventSource` `open` 后**永久进入精确模式**：只接受该帧作为回合完成信号，P0 `running` 近似关闭；SSE 未连通时保留 P0 近似作为迁移回退（旧宿主没有该路由）。断线只 warn、由 EventSource 原生重连，无心跳、无重放（断线期间完成的回合不补发）。归一化逻辑在两个半身的纯 seam 上单测（宿主 `toCompletionFrame`、引擎 `normalizeTurnEndFrame`/`classifyTurnEnd`），SSE 路由/连接隔离与客户端接驳另有契约测试（见 spec Testing Decisions #7 注记）。
 - 点击桥（#6，已实现，见 [spikes/06](spikes/06-click-bridge.md)）：客户端通知点击 → 带标记头 document-relative `POST /dsh-notice/focus` → 宿主立即 204 并 spawn 随包发布的 `focus.ps1`。helper 三段式：① **主路径**向应用进程的 `Electron_NotifyIconHostWindow` 投递 Electron 托盘点击消息（`WM_APP+1` / icon id 2 / `WM_LBUTTONDOWN`），让 DSH 自己的 `focusPrimaryWindow()` 做原生 restore+show+focus——外部 Win32 显示会让 Chromium 渲染器冻结（窗口可见但点不动、无渲染更新），只有应用原生路径能恢复可交互窗口；② Win32 兜底（`SC_RESTORE` / `ShowWindow` / `SetForegroundWindow` + `AttachThreadInput` 前台锁变通），只保证显示；③ 窗口存在但抬不起时最后 `Start-Process 'dsh://open'`。隐藏窗口可能保留 `GetForegroundWindow()` 句柄，判断"已聚焦"必须同时要求 OnScreen。spawn 环境先清洗 `ELECTRON_RUN_AS_NODE`；**不要用 Node 的 `detached: true`**（Windows 上配合 `stdio: 'ignore'` 会让 PowerShell 立即退出），用普通子进程 + `unref()`。渲染进程内无法直接唤起托盘窗口，故必须走宿主。
 - 点击选会话（#9，v1.1，已实现）：同一 `onclick` 先调用公开客户端服务 `uiWorkspace.openSession(action.tag)`（tag = 事件所属主会话 id；`SessionTarget = SessionId | SubagentAddress`），再聚焦窗口；`ctx.get('uiWorkspace')` 惰性解析，服务缺失/抛错静默降级。切换主视图会让事件会话成为 `retainedBy.mainView`，引擎随后的 `viewed` 观测会关闭该会话的完成通知。无需宿主改动。
 - 宿主仍只做旁路：任何失败只记日志，绝不阻塞会话。
@@ -137,7 +137,7 @@
 
 ## 8. 测试策略
 
-- **单测**：通知决策纯函数（事件过滤、前台抑制、合并计数、消解、静音、子代理归并），`node --test`。
+- **单测**：通知决策纯函数（事件过滤、前台抑制、合并计数、消解、静音、子代理归并），`node --test`；#7 起另含传输层**契约测试**（宿主 `toCompletionFrame` + SSE 路由/连接隔离，客户端 EventSource 接驳与精确模式切换）——静默故障传输层无法只靠真机清单回归（见 spec Testing Decisions 的 #7 注记）。
 - **真机验证清单**：Toast 是否出现、归属名/AUMID 与图标、隐藏窗口时是否弹、点击是否拉前、连续事件是否替换。
 - **安装路径验证**：通过 plugin manager `install_bundle` 以本地目录（`link:`）安装，确认 bundle 被激活、`client.js` 被服务。
 - 开发环：link 安装后编辑 `client.js` 约 500ms 热替换（`dsh-client-hmr` 轮询），改完即见。

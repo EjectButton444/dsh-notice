@@ -53,6 +53,12 @@ const FOCUS_ENDPOINT = '/dsh-notice/focus'
 const EVENTS_ENDPOINT = '/dsh-notice/events'
 
 /**
+ * The only `turn/end` reason that reaches the browser half (ticket #7). It is both the
+ * accepted DSH reason kind and the wire value of the frame's `reasonKind` field.
+ */
+const TURN_END_COMPLETED = 'completed'
+
+/**
  * Renderer-only marker header. A plain form post from a web page cannot set custom
  * headers, so the "restore and focus a window" side effect cannot be triggered
  * cross-origin without a CORS-preflighted request.
@@ -86,7 +92,7 @@ const FOCUS_ARGV = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass
 const STRIPPED_HELPER_ENV = ['ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE']
 
 /**
- * Normalize one DSH session event into a turn-completion feed frame.
+ * Convert one DSH session event into a turn-completion feed frame.
  *
  * Only a `turn/end` whose `reason.kind` is `completed` counts: `aborted` (Stop),
  * `blocked`, `error`, `interrupted` (crash recovery), `forked` (fork seed) and
@@ -100,18 +106,20 @@ const STRIPPED_HELPER_ENV = ['ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE
  * @returns a `{ type, sessionId, reasonKind, turn?, origin?, parentSession? }` frame,
  *   or `null` when the event is not a completed turn end.
  */
-export function normalizeTurnEnd(session, event) {
+export function toCompletionFrame(session, event) {
   try {
     if (event === null || typeof event !== 'object') return null
     if (event.type !== 'turn/end') return null
     const data = event.data
     if (data === null || typeof data !== 'object') return null
     const reason = data.reason
-    if (reason === null || typeof reason !== 'object' || reason.kind !== 'completed') return null
+    if (reason === null || typeof reason !== 'object' || reason.kind !== TURN_END_COMPLETED) return null
     const sessionId = session === null || typeof session !== 'object' ? undefined : session.id
     if (typeof sessionId !== 'string' || sessionId.length === 0) return null
 
-    const frame = { type: 'turn/end', sessionId, reasonKind: 'completed' }
+    const frame = { type: 'turn/end', sessionId, reasonKind: TURN_END_COMPLETED }
+    // `turn` is observational only (reading the raw feed is easier for a human);
+    // neither half's decision depends on it.
     if (typeof data.turn === 'number') frame.turn = data.turn
     const delegation = sessionDelegation(session)
     if (delegation.origin !== undefined) frame.origin = delegation.origin
@@ -184,15 +192,17 @@ export function createCompletionFeed() {
       connections.add(res)
       try {
         res.on('close', () => connections.delete(res))
+        // An async socket failure after these synchronous writes is outside publish's
+        // try/catch, and an unhandled response 'error' event would crash the host:
+        // drop that one stream here instead (ticket #7 red line).
+        res.on('error', () => drop(res))
       } catch (error) {
         // Without the close signal the stream would leak; drop it right away.
-        connections.delete(res)
-        destroyQuietly(res)
+        drop(res)
         warn('events stream close hook failed', error)
       }
     } catch (error) {
-      connections.delete(res)
-      destroyQuietly(res)
+      drop(res)
       warn('events stream failed', error)
     }
   }
@@ -200,7 +210,7 @@ export function createCompletionFeed() {
   /** Normalize one session event and broadcast it; non-completions are dropped. */
   function publish(session, event) {
     try {
-      const frame = normalizeTurnEnd(session, event)
+      const frame = toCompletionFrame(session, event)
       if (frame === null) return
       const line = sseFrame(frame)
       for (const res of connections) {
@@ -208,8 +218,7 @@ export function createCompletionFeed() {
           res.write(line)
         } catch (error) {
           // A write failure means the browser side is gone; drop that stream only.
-          connections.delete(res)
-          destroyQuietly(res)
+          drop(res)
           warn('events stream write failed', error)
         }
       }
@@ -217,6 +226,12 @@ export function createCompletionFeed() {
       // The listener runs inside the host's session log dispatch; nothing escapes.
       warn('events broadcast failed', error)
     }
+  }
+
+  /** Forget and destroy one stream; idempotent and never throws. */
+  function drop(res) {
+    connections.delete(res)
+    destroyQuietly(res)
   }
 
   /** Close the feed: destroy every stream and stop tracking it. */

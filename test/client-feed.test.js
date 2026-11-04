@@ -33,9 +33,9 @@ function frameEvent(payload) {
   return { data: JSON.stringify(payload) }
 }
 
-/** One parsed `turn/end` frame with a completed reason. */
+/** One parsed `turn/end` frame with a completed reason, shaped exactly like the host's wire frame. */
 function completedFrame(overrides = {}) {
-  return { type: 'turn/end', sessionId: 's-1', turn: 1, reason: { kind: 'completed' }, ...overrides }
+  return { type: 'turn/end', sessionId: 's-1', turn: 1, reasonKind: 'completed', ...overrides }
 }
 
 /**
@@ -271,8 +271,6 @@ test('aborted / error / interrupted / forked / blocked / max-tokens frames never
   mounted.source.emit('open')
 
   for (const reason of ['aborted', 'error', 'interrupted', 'forked', 'blocked', 'max-tokens', 'unknown']) {
-    mounted.source.emit('message', frameEvent(completedFrame({ reason: { kind: reason } })))
-    // The flat alias form must be filtered too; drop the object reason so it is used.
     mounted.source.emit('message', frameEvent({ type: 'turn/end', sessionId: 's-1', reasonKind: reason }))
   }
   assert.equal(mounted.notifications.length, 0, 'only a completed reason may notify')

@@ -88,10 +88,10 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
   - 不使用 `completionUnread` 作为触发信号（它只对非主视图会话置位，会漏掉主视图正在显示的会话）。
   - 不使用客户端 `ctx.remote.$on('approval/request')`（客户端 waterfall 先到先得，官方 UI 插件已认领）。
 - P1（宿主）：
-  - 订阅 `approval/request`、`user-questions/request`（必须 `prepend: true` 且 `return next()`）与 `session/event` 中 `turn/end`；
+  - 订阅 `session/event` 中 `turn/end`（v1 实现，见下方实现注记）。原计划的 `approval/request`、`user-questions/request` 宿主订阅 v1 **未实现**（P0 的 `pendingInteraction` 已覆盖审批/提问提醒，宿主侧细节对通知决策不是必需）；将来若实现，必须 `{ prepend: true }` 且 `return next()`；
   - 只有 `turn/end.reason.kind === 'completed'` 才算**回合完成**；`aborted`、`error`、`interrupted`、`forked`、`blocked`、`max-tokens` 不通知；
   - 所有钩子逻辑用 try/catch 包裹，只读旁路，任何异常吞掉——绝不让监听器抛错（会让审批 fail-closed 成 `unavailable`）。
-  - **实现注记（2026-11-05，#7）**：宿主半身只订阅了 `session/event` 的 `turn/end`（observe-only、无 `prepend` 语义），把 `reason.kind === 'completed'` 归一化为帧、经免构建 SSE 端点 `GET /dsh-notice/events` 下发（文档相对 `new EventSource('dsh-notice/events')`）；客户端在 SSE 首次 `open` 后永久进入精确模式，P0 的 `running` 边沿近似仅作迁移回退（SSE 未连通的旧宿主）。`approval/request` / `user-questions/request` 的宿主订阅 v1 **未实现**：P0 已通过 `pendingInteraction` 覆盖这两类提醒，宿主侧细节对通知决策不是必需，v1 保持宿主最小旁路（ticket #7 明确「宿主只负责归一化事件，不重复实现通知规则」）；若 v2 需要通知内携带审批/问题细节再补。归一化逻辑在宿主 `normalizeTurnEnd` 与引擎 `normalizeTurnEndFrame` 两个纯 seam 上单测，真机验收见 [spikes/07](spikes/07-precise-turn-completion.md)。
+  - **实现注记（2026-11-05，#7）**：宿主半身用普通 `ctx.on('session/event', …)` 订阅 `turn/end`（observe-only；`prepend` 只对 waterfall 派发有意义，`session/event` 是普通 emit，顺序无关，故不传）。`toCompletionFrame(session, event)` 把 `event.data.reason.kind === 'completed'` 归一化为帧 `{ type:'turn/end', sessionId, reasonKind:'completed', turn?, origin?, parentSession? }`（`turn` 仅作观测装饰），经免构建 SSE 端点 `GET /dsh-notice/events` 下发（客户端 document-relative `new EventSource('dsh-notice/events')`）；其它 reason 与其它事件类型一律丢弃。客户端在 SSE 首次 `open` 后永久进入精确模式，P0 的 `running` 边沿近似仅作迁移回退（SSE 未连通的旧宿主）。归一化逻辑在宿主 `toCompletionFrame` 与引擎 `normalizeTurnEndFrame`/`classifyTurnEnd` 两个纯 seam 上单测，真机验收见 [spikes/07](spikes/07-precise-turn-completion.md)。
 - 会话身份：用 `parentId`/`origin` 识别子代理会话，把其待处理交互归并到所属主会话；子代理的回合完成不提醒。
 
 ## 通知决策引擎（唯一自动化测试 seam）
@@ -119,7 +119,7 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
 
 # Testing Decisions
 
-- **只有一个自动化 seam：通知决策管线（normalize → reduce）。** 它是纯 reducer，外部行为可观察（输入状态/观测/配置/焦点 → 输出新状态与通知动作），不依赖 DSH 运行时与 Windows。
+- **只有一个自动化决策 seam：通知决策管线（normalize → reduce）。** 它是纯 reducer，外部行为可观察（输入状态/观测/配置/焦点 → 输出新状态与通知动作），不依赖 DSH 运行时与 Windows。
 - 测试框架用 `node --test`，表驱动用例，覆盖：
   - 三类事件 → 对应通知动作与文案；
   - 前台抑制：窗口聚焦 + 同一会话 / 窗口聚焦 + 不同会话 / 窗口未聚焦；
@@ -131,7 +131,8 @@ DSH 现有的应用内提示（审批弹窗、提问卡片、侧边栏角标）�
   - 语言选择（zh/en）与标题兜底；
   - 标题为空 → 「未命名会话」+ 工作区兜底。
 - 适配器薄层（DSH 状态源、通知发送器、locale）不写单测，由真机清单覆盖。
-- P1 的宿主事件归一化（把 `approval/request`、`user-questions/request`、`turn/end` 转成引擎输入）仍走同一个纯管线，属于同一 seam 的输入侧，可一并单测。
+- P1 的宿主事件归一化（把 `turn/end` 转成引擎输入）仍走同一个纯管线，属于同一 seam 的输入侧，可一并单测。
+- **实现注记（2026-11-05，#7）**：P1 引入的是**静默故障传输层**（SSE 完成信号——断流/帧协议/路由/连接隔离坏掉时，表现只是「通知不再出现」，真机清单无法在回归时及时发现）。因此除 normalize→reduce 纯管线外，另加两组**契约测试**（与 #6 点击桥的宿主路由契约测试同类，仍不接触 DSH 运行时与 Windows）：① 宿主完成帧归一化 + SSE 路由契约（握手、HEAD/405、坏连接与异步 socket 错误隔离、dispose、恶意 accessor）；② 客户端 EventSource 接驳（文档相对路径、首次 `open` 后关闭 P0 近似、帧→引擎观测、坏帧不抛、dispose）。
 - **最高验收 seam 是真机手动清单**（Toast 本身无法自动化）：通知出现、归属/图标/声音、锁屏内容、托盘隐藏时仍弹、点击唤起、连续事件不堆叠、处理后关闭。
 - 无既有测试先例（greenfield），测试命名使用 `GLOSSARY.md` 术语。
 

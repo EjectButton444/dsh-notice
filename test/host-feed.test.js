@@ -3,7 +3,7 @@
 // The host half observes DSH `session/event` `turn/end` events, keeps only
 // `reason.kind === 'completed'`, and pushes the normalized frame over a
 // document-relative SSE route (`GET /dsh-notice/events`). These tests pin:
-//   A. the pure normalization seam (`normalizeTurnEnd`), which decides what a
+//   A. the pure normalization seam (`toCompletionFrame`), which decides what a
 //      "completed turn" is and never throws,
 //   B. the SSE broadcaster (`createCompletionFeed`), including the rule that one
 //      broken client never breaks the feed or the session,
@@ -27,8 +27,8 @@ function session(id = 'session-1', header) {
   return header === undefined ? { id } : { id, header }
 }
 
-test('normalizeTurnEnd returns a completed frame and preserves session identity', () => {
-  assert.deepEqual(host.normalizeTurnEnd(session(), turnEndEvent('completed', 3)), {
+test('toCompletionFrame returns a completed frame and preserves session identity', () => {
+  assert.deepEqual(host.toCompletionFrame(session(), turnEndEvent('completed', 3)), {
     type: 'turn/end',
     sessionId: 'session-1',
     reasonKind: 'completed',
@@ -36,31 +36,31 @@ test('normalizeTurnEnd returns a completed frame and preserves session identity'
   })
 })
 
-test('normalizeTurnEnd drops every turn end reason that is not a completion', () => {
+test('toCompletionFrame drops every turn end reason that is not a completion', () => {
   // Everything except `completed` ends the turn without the assistant waiting on
   // the user: Stop (`aborted`), approvals/plan gating (`blocked`), model failures
   // (`error`), crash recovery (`interrupted`), fork seeds (`forked`) and token caps
   // (`max-tokens`). None of them may become a completion notification.
   for (const kind of ['aborted', 'blocked', 'error', 'interrupted', 'forked', 'max-tokens', 'unknown']) {
     assert.equal(
-      host.normalizeTurnEnd(session(), turnEndEvent(kind)),
+      host.toCompletionFrame(session(), turnEndEvent(kind)),
       null,
       `reason.kind ${JSON.stringify(kind)} must not be normalized into a completion frame`,
     )
   }
 })
 
-test('normalizeTurnEnd drops every other session event type', () => {
+test('toCompletionFrame drops every other session event type', () => {
   for (const type of ['turn/start', 'step/start', 'step/end', 'assistant/message', 'session/end']) {
     assert.equal(
-      host.normalizeTurnEnd(session(), { type, data: { turn: 1, reason: { kind: 'completed' } } }),
+      host.toCompletionFrame(session(), { type, data: { turn: 1, reason: { kind: 'completed' } } }),
       null,
       `a ${type} event is not a turn end`,
     )
   }
 })
 
-test('normalizeTurnEnd returns null for malformed sessions and events without throwing', () => {
+test('toCompletionFrame returns null for malformed sessions and events without throwing', () => {
   const cases = [
     [undefined, turnEndEvent('completed')],
     [null, turnEndEvent('completed')],
@@ -79,25 +79,25 @@ test('normalizeTurnEnd returns null for malformed sessions and events without th
   ]
 
   for (const [invalidSession, invalidEvent] of cases) {
-    assert.equal(host.normalizeTurnEnd(invalidSession, invalidEvent), null)
+    assert.equal(host.toCompletionFrame(invalidSession, invalidEvent), null)
   }
 })
 
-test('normalizeTurnEnd carries only the fields the frame contract declares', () => {
-  const unrelatedHeader = host.normalizeTurnEnd({ id: 's1', header: { cwd: 'C:\\work' }, extra: true }, turnEndEvent('completed', 2))
+test('toCompletionFrame carries only the fields the frame contract declares', () => {
+  const unrelatedHeader = host.toCompletionFrame({ id: 's1', header: { cwd: 'C:\\work' }, extra: true }, turnEndEvent('completed', 2))
   assert.deepEqual(unrelatedHeader, { type: 'turn/end', sessionId: 's1', reasonKind: 'completed', turn: 2 })
 
-  const withoutTurn = host.normalizeTurnEnd(session(), {
+  const withoutTurn = host.toCompletionFrame(session(), {
     type: 'turn/end',
     data: { turn: 'not-a-number', reason: { kind: 'completed' } },
   })
   assert.equal(Object.hasOwn(withoutTurn, 'turn'), false, 'turn is only reported when the event carries a number')
 
-  const primary = host.normalizeTurnEnd({ id: 'root', header: { origin: 'primary', parentSession: '' } }, turnEndEvent('completed'))
+  const primary = host.toCompletionFrame({ id: 'root', header: { origin: 'primary', parentSession: '' } }, turnEndEvent('completed'))
   assert.equal(Object.hasOwn(primary, 'origin'), false, 'a primary session is not reported as a subagent')
   assert.equal(Object.hasOwn(primary, 'parentSession'), false, 'an empty parentSession is not reported')
 
-  const subagent = host.normalizeTurnEnd({ id: 'sub', header: { origin: 'subagent', parentSession: 'root' } }, turnEndEvent('completed'))
+  const subagent = host.toCompletionFrame({ id: 'sub', header: { origin: 'subagent', parentSession: 'root' } }, turnEndEvent('completed'))
   assert.deepEqual(subagent, {
     type: 'turn/end',
     sessionId: 'sub',
@@ -108,14 +108,14 @@ test('normalizeTurnEnd carries only the fields the frame contract declares', () 
   })
 })
 
-test('normalizeTurnEnd never throws on hostile accessors', () => {
+test('toCompletionFrame never throws on hostile accessors', () => {
   const hostileSession = {}
   Object.defineProperty(hostileSession, 'id', {
     get() {
       throw new Error('session id exploded')
     },
   })
-  assert.equal(host.normalizeTurnEnd(hostileSession, turnEndEvent('completed')), null, 'an unreadable session is not a completion')
+  assert.equal(host.toCompletionFrame(hostileSession, turnEndEvent('completed')), null, 'an unreadable session is not a completion')
 
   const hostileEvent = { type: 'turn/end' }
   Object.defineProperty(hostileEvent, 'data', {
@@ -123,7 +123,7 @@ test('normalizeTurnEnd never throws on hostile accessors', () => {
       throw new Error('event data exploded')
     },
   })
-  assert.equal(host.normalizeTurnEnd(session(), hostileEvent), null, 'an unreadable event is not a completion')
+  assert.equal(host.toCompletionFrame(session(), hostileEvent), null, 'an unreadable event is not a completion')
 })
 
 test('createCompletionFeed connect writes the SSE handshake and tracks the client', () => {
@@ -166,6 +166,23 @@ test('createCompletionFeed forgets a client whose connection closed', () => {
   feed.publish(session(), turnEndEvent('completed'))
 
   assert.deepEqual(response.writes, [': connected\n\n'], 'a closed stream is not written to')
+})
+
+test('createCompletionFeed survives an async response error and drops only that stream', () => {
+  const feed = host.createCompletionFeed()
+  const dying = sseResponse()
+  const healthy = sseResponse()
+  feed.connect(dying)
+  feed.connect(healthy)
+
+  // A socket can fail asynchronously after the synchronous writes; an unhandled
+  // response 'error' would crash the host, so the feed drops that stream only.
+  assert.doesNotThrow(() => dying.emitError(new Error('socket reset')), 'an async socket error never escapes the feed')
+  assert.equal(dying.destroyed, true, 'the failed stream is dropped')
+
+  feed.publish(session(), turnEndEvent('completed', 9))
+  assert.equal(dying.writes.length, 1, 'a dropped stream is not written to')
+  assert.equal(healthy.writes.length, 2, 'the healthy client still receives the frame')
 })
 
 test('createCompletionFeed drops a broken client without disturbing the others', () => {
@@ -425,6 +442,7 @@ function sseResponse() {
     failWrites: false,
     writes: [],
     closeListeners: [],
+    errorListeners: [],
     writeHead(statusCode, headers) {
       response.statusCode = statusCode
       response.headers = headers
@@ -442,10 +460,15 @@ function sseResponse() {
     },
     on(event, listener) {
       if (event === 'close') response.closeListeners.push(listener)
+      if (event === 'error') response.errorListeners.push(listener)
       return response
     },
     emitClose() {
       for (const listener of response.closeListeners) listener()
+    },
+    emitError(error) {
+      assert.ok(response.errorListeners.length > 0, 'the stream subscribes an error listener')
+      for (const listener of response.errorListeners) listener(error)
     },
   }
   return response

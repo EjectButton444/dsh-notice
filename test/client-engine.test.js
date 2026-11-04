@@ -420,51 +420,45 @@ test('classifyPending maps only the attention pending kinds', () => {
 
 // --- Precise turn completion from the host (#7) ---------------------------
 // The host half forwards `session/event` `turn/end` frames over SSE. Only
-// `reason.kind === 'completed'` means the turn really finished; aborted / error /
-// interrupted / forked / blocked / max-tokens must never look like a completion.
+// `reason.kind === 'completed'` (the host's flat `reasonKind` wire field) means the
+// turn really finished; aborted / error / interrupted / forked / blocked /
+// max-tokens must never look like a completion.
 
 test('classifyTurnEnd maps only a completed host turn end reason', () => {
-  assert.equal(engine.classifyTurnEnd({ kind: 'completed' }), 'turnComplete', 'object reason form')
-  assert.equal(engine.classifyTurnEnd('completed'), 'turnComplete', 'raw string kind form')
+  assert.equal(engine.classifyTurnEnd('completed'), 'turnComplete')
 
   for (const kind of ['aborted', 'blocked', 'error', 'interrupted', 'forked', 'max-tokens', 'unknown']) {
-    assert.equal(engine.classifyTurnEnd({ kind }), undefined, `the ${kind} reason is not a completion`)
-    assert.equal(engine.classifyTurnEnd(kind), undefined, `the raw ${kind} kind is not a completion`)
+    assert.equal(engine.classifyTurnEnd(kind), undefined, `the ${kind} reason is not a completion`)
   }
 
   assert.equal(engine.classifyTurnEnd(undefined), undefined)
   assert.equal(engine.classifyTurnEnd(null), undefined)
-  assert.equal(engine.classifyTurnEnd({}), undefined)
-  assert.equal(engine.classifyTurnEnd({ kind: 42 }), undefined)
-  assert.doesNotThrow(() => engine.classifyTurnEnd(Object.create(null)), 'a reason without a prototype must never throw')
+  assert.equal(engine.classifyTurnEnd(''), undefined)
+  assert.equal(engine.classifyTurnEnd(42), undefined)
+  assert.equal(engine.classifyTurnEnd({ kind: 'completed' }), undefined, 'the classification is over the wire field, not an object')
 })
 
 test('normalizeTurnEndFrame normalizes a completed frame into reducer attention input', () => {
-  const frame = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1', turn: 2, reason: { kind: 'completed' } })
-  assert.deepEqual(plain(frame), { sessionId: 's-1', kind: 'turnComplete', turn: 2, isSubagent: false })
+  const frame = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1', reasonKind: 'completed', turn: 2 })
+  assert.deepEqual(plain(frame), { sessionId: 's-1', kind: 'turnComplete', isSubagent: false })
   assert.equal(frame.mainSessionId, undefined, 'a main-session frame has no mainSessionId')
 
-  const trimmed = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: ' s-1 ', reason: { kind: 'completed' } })
+  const trimmed = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: ' s-1 ', reasonKind: 'completed' })
   assert.equal(trimmed.sessionId, 's-1')
-  assert.equal(trimmed.turn, undefined, 'a missing turn stays undefined')
-
-  const flat = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1', reasonKind: 'completed' })
-  assert.equal(flat.kind, 'turnComplete', 'the flat reasonKind form is accepted')
 })
 
 test('normalizeTurnEndFrame rejects frames that are not precise completions', () => {
-  const base = { type: 'turn/end', sessionId: 's-1' }
   assert.equal(engine.normalizeTurnEndFrame(null), null)
   assert.equal(engine.normalizeTurnEndFrame(undefined), null)
   assert.equal(engine.normalizeTurnEndFrame('turn/end'), null)
   assert.equal(engine.normalizeTurnEndFrame(42), null)
   assert.equal(engine.normalizeTurnEndFrame({}), null)
-  assert.equal(engine.normalizeTurnEndFrame({ ...base, type: 'turn/start', reason: { kind: 'completed' } }), null)
-  assert.equal(engine.normalizeTurnEndFrame({ type: 'turn/end', reason: { kind: 'completed' } }), null, 'sessionId is required')
-  assert.equal(engine.normalizeTurnEndFrame({ ...base, sessionId: '   ', reason: { kind: 'completed' } }), null, 'blank sessionId is rejected')
-  assert.equal(engine.normalizeTurnEndFrame({ ...base, reason: { kind: 'aborted' } }), null)
-  assert.equal(engine.normalizeTurnEndFrame({ ...base, reasonKind: 'error' }), null)
-  assert.equal(engine.normalizeTurnEndFrame({ ...base }), null, 'a frame without any reason is not a completion')
+  assert.equal(engine.normalizeTurnEndFrame({ type: 'turn/start', sessionId: 's-1', reasonKind: 'completed' }), null)
+  assert.equal(engine.normalizeTurnEndFrame({ type: 'turn/end', reasonKind: 'completed' }), null, 'sessionId is required')
+  assert.equal(engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: '   ', reasonKind: 'completed' }), null, 'blank sessionId is rejected')
+  assert.equal(engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1', reasonKind: 'aborted' }), null)
+  assert.equal(engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1', reasonKind: 'error' }), null)
+  assert.equal(engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1' }), null, 'a frame without a reason is not a completion')
   assert.doesNotThrow(() => engine.normalizeTurnEndFrame(Object.create(null)))
 })
 
@@ -474,25 +468,22 @@ test('normalizeTurnEndFrame attributes subagent frames to their parent session',
     sessionId: 'sub-1',
     origin: 'subagent',
     parentSession: 'main-1',
-    reason: { kind: 'completed' },
+    reasonKind: 'completed',
   })
   assert.equal(origin.isSubagent, true)
   assert.equal(origin.mainSessionId, 'main-1')
 
-  const parentOnly = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 'sub-1', parentSession: 'main-1', reason: { kind: 'completed' } })
+  const parentOnly = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 'sub-1', parentSession: 'main-1', reasonKind: 'completed' })
   assert.equal(parentOnly.isSubagent, true, 'a parentSession alone marks the frame as subagent work')
   assert.equal(parentOnly.mainSessionId, 'main-1')
 
-  const originOnly = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 'sub-1', origin: 'subagent', reason: { kind: 'completed' } })
+  const originOnly = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 'sub-1', origin: 'subagent', reasonKind: 'completed' })
   assert.equal(originOnly.isSubagent, true)
   assert.equal(originOnly.mainSessionId, undefined, 'a subagent frame without a parent session is unattributable')
-
-  const badTurn = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1', turn: Number.NaN, reason: { kind: 'completed' } })
-  assert.equal(badTurn.turn, undefined, 'a non-finite turn is dropped instead of leaking NaN')
 })
 
 test('a completed host frame drives the reducer to one completion notification', () => {
-  const normalized = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1', turn: 1, reason: { kind: 'completed' } })
+  const normalized = engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1', reasonKind: 'completed' })
   const { actions } = one({
     observation: { type: 'attention', event: { ...normalized, title: 'Refactor the parser', locale: 'zh' } },
     now: 0,
@@ -505,7 +496,7 @@ test('a completed host frame drives the reducer to one completion notification',
   assert.equal(actions[0].tag, 's-1')
 
   // An aborted host frame never normalizes, so the pipeline yields nothing at all.
-  assert.equal(engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1', reason: { kind: 'aborted' } }), null)
+  assert.equal(engine.normalizeTurnEndFrame({ type: 'turn/end', sessionId: 's-1', reasonKind: 'aborted' }), null)
 })
 
 test('a completed subagent frame produces no completion notification', () => {
@@ -514,7 +505,7 @@ test('a completed subagent frame produces no completion notification', () => {
     sessionId: 'sub-1',
     origin: 'subagent',
     parentSession: 'main-1',
-    reason: { kind: 'completed' },
+    reasonKind: 'completed',
   })
   const { actions } = one({
     observation: { type: 'attention', event: { ...normalized, title: 'Main session', locale: 'zh' } },
