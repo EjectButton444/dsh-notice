@@ -9,23 +9,25 @@
 - `gh` 不在 PATH：`C:\Program Files\GitHub CLI\gh.exe`；仓库 remote `EjectButton444/dsh-notice`（public）。
 - 工具里的 `pwsh` 实际是 **Windows PowerShell 5.1**：含中文/非 ASCII 的 `.ps1` 必须存成 UTF-8 **with BOM**（否则按 ANSI 解码成乱码）；命令行内联的中文参数不受影响。
 
-## 插件安装现状（已安装、已启用）
+## 插件安装现状（已切换为 npm 正式渠道）
 
-- 安装方式：`dsh plugin --profile desktop add "D:\AI区\dsh小插件\notice"`（与 `plugin_manager install_bundle` 共用 package operations，写入 `link:` 依赖并把 bundle 追加到 `dsh.profile.bundles`）。
-- profile `package.json`：`"dsh-notice": "link:D:/AI区/dsh小插件/notice"`；`profiles/desktop/node_modules/dsh-notice` 是指向仓库的 junction。
-- 安装时进程里激活的 host 行 id 是 `dsh-notice`；仓库 `cordis.patch.yml` 已按 spec 改为 `notice`，**下次 DSH 重启后生效**。判断当前激活状态以 client graph（`GET /plugins/events`）里是否存在 `dsh-notice` 为准。
+- 2026-11-05 起本机改用 **npm 正式渠道**：profile 依赖 `"dsh-notice": "1.0.0"`（来自 npmjs，`bundle` 已在 `dsh.profile.bundles` 中并启用）。安装通过 `plugin_manager install_bundle`（spec `dsh-notice@1.0.0`）完成；`profiles/desktop/node_modules/dsh-notice` 是 pnpm store 硬链接的**真实目录**，不再是 junction。
+- 旧 link 安装的 `node_modules/dsh-notice` junction 已删除。切换时注意：pnpm 无法 rename 覆盖旧 junction，会报 `ERR_PNPM_EPERM`，需先删 junction（`[System.IO.Directory]::Delete()` 只删联接，不动物理仓库）再安装。
+- 开发时临时切回 link（改仓库代码后热更新）：先 `plugin_manager remove_bundle dsh-notice`（或 `dsh plugin --profile desktop remove dsh-notice`），再 `dsh plugin --profile desktop add "D:\AI区\dsh小插件\notice"`；验收完切回正式渠道：remove 后 `add dsh-notice@<version>`。用 CLI 时需完全退出 DSH；GUI 运行时用 `plugin_manager` 工具。
+- 插件市场索引已写入 profile patch（`- id: plugin-market / config.indexes`，指向本仓库 raw `plugin-market-index.json`），本机 Discover 已能看到 `dsh-notice` 条目。
+- 安装时进程里激活的 host 行 id 是 `notice`（仓库 `cordis.patch.yml` 的值）；判断当前激活状态以宿主路由 `GET /dsh-notice/config` 200 为准（`GET /plugins/events` 是 SSE 流，直接 GET 会挂住）。
 - **当前实现状态（#6/#7/#9 之后）**：客户端半身 = `client.js`（适配层）+ `client.engine.js`（纯决策引擎 chunk）；宿主半身 = `index.js`（只读配置路由 + 点击桥端点 + 精确完成 SSE 端点）+ `focus.ps1`（窗口恢复 helper，三段式：Electron 托盘点击原生路径 → Win32 兜底 → `dsh://open` 最后）。通知点击 = **先 `uiWorkspace.openSession(事件会话)` 切会话**（#9，v1.1）→ 再聚焦窗口（#6 点击桥，`POST /dsh-notice/focus`，标记头 `x-dsh-notice-focus: 1`）。回合完成自 #7 起由宿主 `session/event` 的 `turn/end.reason.kind === 'completed'` 经 SSE 下发给客户端；客户端在 SSE 首次 `open` 后进入精确模式并永久关闭 P0 `running` 近似（未连通时保留迁移回退）。以上均真机验收通过。
 - **宿主路由（当前）**：`GET /dsh-notice/config`（#5，返回 profile 行 config 原文；无覆盖为 `{}`）、`POST /dsh-notice/focus`（#6，带标记头才接受；立即 204，spawn `focus.ps1`）、`GET /dsh-notice/events`（#7，`text/event-stream`；`HEAD` 只回响应头，其它方法 405；只下发 `reason.kind === 'completed'` 的归一化帧）。客户端都以 document-relative 路径调用，直接 curl 用 `http://127.0.0.1:<port>/...`。
-- 卸载/禁用：插件页开关或 Remove，或 `dsh plugin --profile desktop remove dsh-notice`（改 profile；本机只有这一个 dev profile）。
+- 卸载/禁用：插件页开关或 Remove，或 `dsh plugin --profile desktop remove dsh-notice`（本机只有这一个 profile）。
 
 ## 开发环
 
-- **客户端半身**（`client.js`）：`dsh-client-hmr` 以 500ms stat 轮询已 link 包，保存后约 **450ms** 热重载并重跑 `apply`（实测 449ms）。
+- **客户端半身**（`client.js`）：仅当包以 `link:` 安装时，`dsh-client-hmr` 以 500ms stat 轮询已 link 包，保存后约 **450ms** 热重载并重跑 `apply`（实测 449ms）。当前 npm 正式渠道下 HMR 不监视本仓库；要热更新需先按上面的「切回 link」步骤操作。
 - **纯决策引擎**（`client.engine.js`）：以 package-local client chunk 形式由 `client.js` 用 `require.async('./client.engine.js')` 加载。**HMR 只监视 `client.js` 的字节，改 `client.engine.js` 本身不会触发重载**（实测 graph rev 不变）——改引擎后保存一次 `client.js`（touch/加删空行均可）才会重载并拉新 chunk。若忘记这一步，会出现「新 `client.js` + 旧 engine chunk」混搭，新调用的引擎导出未定义、异常只进 `console.warn`，表现为**通知静默失效**（#4 实测踩过）。
 - 客户端脚本会被 HMR **重新执行**：顶层 `const/let` 在第二次执行时抛 "already declared" 且静默失败 → 代码必须整体包在 IIFE 内（`client.js` 顶部有注释）。
 - **#7 SSE 精确完成通道**：客户端 `new EventSource('dsh-notice/events')`（document-relative，与 `dsh-client-hmr` 的 `new EventSource('plugins/events')` 同款；Electron 的 `dsh-app://` 转发保证同源）。宿主重组合/重启会断开流，EventSource 原生重连；客户端首次 `open` 后永久进入精确模式。调 SSE 时可在宿主侧 `curl` 或跑 `.scratch/verify/07-sse-watch.mjs` 观察帧。
 - **客户端切会话（#9 有用事实）**：DSH 客户端有公开服务方法 `ctx.uiWorkspace.openSession(target)`（`SessionTarget = SessionId | SubagentAddress`，官方 API catalog 描述 "Select a Session and show its Conversation as one UI navigation action"），官方 UI 插件都这样切主视图。第三方客户端插件用 **`ctx.get('uiWorkspace')` 惰性解析**（服务缺失返回 undefined；不要写进 `inject`，否则服务缺失时整个插件不激活），调用包 try/catch。验证方法：切会话会改变**窗口标题**（标题 = 当前会话标题 + `— DeepSeek Harness`），用 `06-title-timeline.ps1` 采样即可自动化观察主视图切换；或在临时 HMR 探针里 `openSession(另一个 sessionId)` 再切回。
-- **宿主半身**（`index.js`、`cordis.patch.yml`、`focus.ps1`）：`index.js`/`cordis.patch.yml` 不会自动热替换；需要一次 profile 重组合（改动并保存 profile 的 `cordis.patch.yml`，或在插件页关/开一行）或重启 DSH。**重组合会替换「加载文件已变化」的 linked 包代码**（#6 实测：改 `index.js` → 保存 profile patch → ~2–4s 后新代码生效；可在响应里加临时头/日志确认）。**#7 实测补充**：宿主插件重组合会重载本插件 → 断开所有 `/dsh-notice/events` SSE 连接（客户端 EventSource 会原生自动重连，会话不受影响）。`focus.ps1` 是每次点击 spawn 时才读的文件，改它本身不需要重组合。
+- **宿主半身**（`index.js`、`cordis.patch.yml`、`focus.ps1`）：`index.js`/`cordis.patch.yml` 不会自动热替换；需要一次 profile 重组合（改动并保存 profile 的 `cordis.patch.yml`，或在插件页关/开一行）或重启 DSH。**link 渠道下重组合会替换「加载文件已变化」的 linked 包代码**（#6 实测：改 `index.js` → 保存 profile patch → ~2–4s 后新代码生效；可在响应里加临时头/日志确认）；npm 渠道下仓库改动不会生效，需重新安装新版本。**#7 实测补充**：宿主插件重组合会重载本插件 → 断开所有 `/dsh-notice/events` SSE 连接（客户端 EventSource 会原生自动重连，会话不受影响）。`focus.ps1` 是每次点击 spawn 时才读的文件，改它本身不需要重组合。
 - 改 `package.json` 的 `exports`/`files`/`dsh` 字段后，需要重新安装或重启才被读取。
 - **改插件配置（#5 起）**：配置在 profile `cordis.patch.yml` 的本插件 loader 行。注意**重组合后行 id 是 `notice`**（仓库 bundle patch 的值），写 `- id: dsh-notice` 的覆盖会被静默跳过；正确流程：
   1. 在 `C:\Users\19533\.dsh\profiles\desktop\cordis.patch.yml` 追加/修改 `- id: notice / name: dsh-notice / config: {...}`；
